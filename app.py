@@ -4,6 +4,7 @@ import asyncio
 import threading
 import os
 import traceback
+import signal
 from datetime import datetime
 from flask import Flask
 from selenium import webdriver
@@ -60,6 +61,12 @@ def obtener_hora_chilena():
             return time.strftime('%H:%M:%S')
     else:
         return time.strftime('%H:%M:%S')
+
+# ==============================
+# CONTROL DE INSTANCIA DEL BOT
+# ==============================
+bot_instance_running = False
+bot_instance_lock = threading.Lock()
 
 # ==============================
 # CONFIGURACIÓN DE SELENIUM PARA RENDER
@@ -348,30 +355,67 @@ def verificar_pozos():
         raise e
 
 # ==============================
-# CONFIGURAR BOT DE TELEGRAM
+# CONFIGURAR BOT DE TELEGRAM (VERSIÓN CORREGIDA)
 # ==============================
 async def run_bot_polling():
     """Ejecuta el bot de Telegram de forma asíncrona"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    global bot_instance_running
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ayuda", ayuda))
-    application.add_handler(CommandHandler("caudales", caudales))
+    with bot_instance_lock:
+        if bot_instance_running:
+            print("⚠️ El bot ya está corriendo, ignorando nueva instancia")
+            return
+        bot_instance_running = True
     
-    print("🤖 Bot de Telegram iniciado (polling)")
-    
-    # Inicializar y empezar polling
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    # Mantener el bot corriendo
-    while True:
-        await asyncio.sleep(1)
+    application = None
+    try:
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("ayuda", ayuda))
+        application.add_handler(CommandHandler("caudales", caudales))
+        
+        print("🤖 Bot de Telegram iniciado (polling)")
+        
+        # Inicializar y empezar polling
+        await application.initialize()
+        await application.start()
+        
+        # Usar un timeout más largo y drop_pending_updates=True
+        await application.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=['message'],
+            poll_interval=1.0,
+            timeout=30
+        )
+        
+        print("✅ Bot de Telegram está escuchando comandos")
+        
+        # Mantener el bot corriendo
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        print(f"❌ Error en el bot de Telegram: {e}")
+        traceback.print_exc()
+    finally:
+        with bot_instance_lock:
+            bot_instance_running = False
+        if application:
+            try:
+                await application.stop()
+            except:
+                pass
 
 def iniciar_bot_telegram():
     """Inicia el bot de Telegram en un hilo separado con su propio event loop"""
     print("🔄 Iniciando bot de Telegram en hilo separado...")
+    
+    # Verificar si ya hay una instancia corriendo
+    with bot_instance_lock:
+        if bot_instance_running:
+            print("⚠️ Ya hay una instancia del bot corriendo, no se iniciará otra")
+            return
     
     # Crear nuevo event loop para este hilo
     loop = asyncio.new_event_loop()
@@ -393,43 +437,70 @@ driver = None
 
 def run_bot():
     """Función que ejecuta el bot principal"""
-    global driver
-    try:
-        # Crear driver
-        driver = create_driver()
-        print("✅ Driver creado exitosamente")
-        
-        # Iniciar sesión
-        login()
-        print("✅ Login exitoso")
-        
-        # Iniciar bot de Telegram en un hilo
-        bot_thread = threading.Thread(target=iniciar_bot_telegram, daemon=True)
-        bot_thread.start()
-        print("✅ Hilo del bot de Telegram iniciado")
-        
-        # Pequeña pausa para que el bot se inicie
-        time.sleep(5)
-        
-        # Bucle principal de monitoreo
-        print("🔄 Iniciando monitoreo continuo (cada 2 minutos)...")
-        while True:
-            try:
-                verificar_pozos()
-                print("⏱️ Esperando 2 minutos para la próxima verificación...")
-                time.sleep(120)
-            except Exception as e:
-                print(f"❌ Error en el bucle principal: {e}")
-                traceback.print_exc()
-                print("🔄 Reintentando en 30 segundos...")
-                time.sleep(30)
-    except Exception as e:
-        print(f"❌ Error fatal: {e}")
-        traceback.print_exc()
-    finally:
-        if driver:
-            driver.quit()
-            print("🛑 Driver cerrado")
+    global driver, bot_instance_running
+    intentos = 0
+    max_intentos = 3
+    
+    while intentos < max_intentos:
+        try:
+            # Crear driver
+            driver = create_driver()
+            print("✅ Driver creado exitosamente")
+            
+            # Iniciar sesión
+            login()
+            print("✅ Login exitoso")
+            
+            # Pequeña pausa antes de iniciar el bot
+            time.sleep(2)
+            
+            # Iniciar bot de Telegram en un hilo (solo una vez)
+            with bot_instance_lock:
+                if not bot_instance_running:
+                    bot_thread = threading.Thread(target=iniciar_bot_telegram, daemon=True)
+                    bot_thread.start()
+                    print("✅ Hilo del bot de Telegram iniciado")
+                else:
+                    print("✅ Bot de Telegram ya estaba corriendo")
+            
+            # Esperar a que el bot se inicie
+            time.sleep(5)
+            
+            # Reiniciar contador de intentos
+            intentos = 0
+            
+            # Bucle principal de monitoreo
+            print("🔄 Iniciando monitoreo continuo (cada 2 minutos)...")
+            while True:
+                try:
+                    verificar_pozos()
+                    print("⏱️ Esperando 2 minutos para la próxima verificación...")
+                    time.sleep(120)
+                except Exception as e:
+                    print(f"❌ Error en el bucle principal: {e}")
+                    traceback.print_exc()
+                    print("🔄 Reintentando en 30 segundos...")
+                    time.sleep(30)
+                    
+        except Exception as e:
+            intentos += 1
+            print(f"❌ Error fatal (intento {intentos}/{max_intentos}): {e}")
+            traceback.print_exc()
+            
+            if intentos < max_intentos:
+                print(f"🔄 Reintentando en {60 * intentos} segundos...")
+                time.sleep(60 * intentos)
+            else:
+                print("❌ Demasiados intentos fallidos. Esperando 5 minutos...")
+                time.sleep(300)
+                intentos = 0  # Reiniciar contador después de esperar
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+                print("🛑 Driver cerrado")
 
 # ==============================
 # SERVIDOR FLASK PARA HEALTH CHECK
