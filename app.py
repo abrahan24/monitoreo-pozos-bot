@@ -51,26 +51,32 @@ def create_driver():
     chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--disable-setuid-sandbox")
     chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-web-security")
+    chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
     
-    # Intentar diferentes formas de iniciar Chrome
+    # Ruta del binario de Chrome en el contenedor
+    chrome_options.binary_location = "/usr/bin/google-chrome"
+    
     try:
-        # Primero intentar con la ruta estándar de Linux
-        chrome_options.binary_location = "/usr/bin/google-chrome"
+        # Usar ChromeDriver instalado por Docker
         service = Service('/usr/local/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        print("✅ Chrome driver creado con ruta estándar")
+        print("✅ Chrome driver creado exitosamente")
         return driver
-    except:
+    except Exception as e:
+        print(f"❌ Error creando driver: {e}")
+        # Fallback: intentar con webdriver-manager
         try:
-            # Segundo intento: dejar que webdriver-manager lo maneje
             print("🔄 Intentando con webdriver-manager...")
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
-            print("✅ Chrome driver creado con webdriver-manager")
             return driver
-        except Exception as e:
-            print(f"❌ Error creando driver: {e}")
-            raise e
+        except Exception as e2:
+            print(f"❌ Error también con webdriver-manager: {e2}")
+            raise e2
 
 # ==============================
 # FUNCIONES DE TELEGRAM (sin cambios)
