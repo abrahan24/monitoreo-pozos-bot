@@ -4,6 +4,7 @@ import asyncio
 import threading
 import os
 import traceback
+from datetime import datetime
 from flask import Flask
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -36,6 +37,29 @@ ultimo_reporte_horario = 0
 ultima_alerta_detenido = {}
 ultima_alerta_critico = {}
 TIEMPO_ENTRE_ALERTAS = 300
+
+# ==============================
+# ZONA HORARIA CHILE
+# ==============================
+try:
+    import pytz
+    CHILE_TZ = pytz.timezone('America/Santiago')
+    PYTZ_AVAILABLE = True
+except ImportError:
+    PYTZ_AVAILABLE = False
+    print("⚠️ pytz no instalado, usando hora UTC")
+
+def obtener_hora_chilena():
+    """Retorna la hora actual en formato HH:MM:SS con zona horaria de Chile"""
+    if PYTZ_AVAILABLE:
+        try:
+            ahora_utc = datetime.now(pytz.UTC)
+            ahora_chile = ahora_utc.astimezone(CHILE_TZ)
+            return ahora_chile.strftime('%H:%M:%S')
+        except:
+            return time.strftime('%H:%M:%S')
+    else:
+        return time.strftime('%H:%M:%S')
 
 # ==============================
 # CONFIGURACIÓN DE SELENIUM PARA RENDER
@@ -123,7 +147,7 @@ async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         mensaje += f"<b>{nombre}:</b> {caudal} L/s - {emoji}\n"
     
-    mensaje += f"\n🕐 Actualizado: {time.strftime('%H:%M:%S')}"
+    mensaje += f"\n🕐 Actualizado (hora Chile): {obtener_hora_chilena()}"
     
     await update.message.reply_text(mensaje, parse_mode='HTML')
 
@@ -135,13 +159,16 @@ def enviar_telegram(mensaje, chat_ids=None):
     if chat_ids is None:
         chat_ids = CHAT_IDS_AUTORIZADOS
     
+    # Limpiar IDs vacíos
+    chat_ids = [chat_id for chat_id in chat_ids if chat_id.strip()]
+    
     for chat_id in chat_ids:
         try:
             # Crear nuevo event loop para cada mensaje
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(bot.send_message(
-                chat_id=chat_id, 
+                chat_id=chat_id.strip(), 
                 text=mensaje,
                 parse_mode='HTML'
             ))
@@ -177,7 +204,7 @@ def enviar_reporte_horario():
     hora_actual = time.time()
     if hora_actual - ultimo_reporte_horario >= 3600:
         if ultimos_caudales:
-            mensaje = f"<b>📊 REPORTE HORARIO - {time.strftime('%H:%M')}</b>\n\n"
+            mensaje = f"<b>📊 REPORTE HORARIO - {obtener_hora_chilena()}</b>\n\n"
             
             detenidos = sum(1 for c in ultimos_caudales.values() if c == 0)
             criticos = sum(1 for c in ultimos_caudales.values() if 0 < c < 10)
@@ -204,13 +231,14 @@ def enviar_reporte_horario():
             
             enviar_telegram(mensaje)
             ultimo_reporte_horario = hora_actual
-            print(f"📊 Reporte horario enviado - {time.strftime('%H:%M')}")
+            print(f"📊 Reporte horario enviado - {obtener_hora_chilena()}")
 
 def verificar_pozos():
     """Verifica el estado de todos los pozos"""
     global ultimos_caudales
     
-    print(f"\n🔍 Verificando pozos - {time.strftime('%H:%M:%S')}")
+    hora_chile = obtener_hora_chilena()
+    print(f"\n🔍 Verificando pozos - {hora_chile} (hora Chile)")
     
     driver.get(PANEL_URL)
     time.sleep(5)
@@ -247,7 +275,7 @@ def verificar_pozos():
 <b>Pozo:</b> {nombre}
 <b>Caudal:</b> 0 L/s
 <b>Estado:</b> DETENIDO
-<b>Hora:</b> {time.strftime('%H:%M:%S')}
+<b>Hora Chile:</b> {obtener_hora_chilena()}
 <b>⏱️ El pozo continúa detenido</b>"""
                     
                     enviar_telegram(mensaje)
@@ -266,7 +294,7 @@ def verificar_pozos():
 <b>Pozo:</b> {nombre}
 <b>Caudal actual:</b> {caudal} L/s
 <b>Umbral:</b> Menor a 10 L/s
-<b>Hora:</b> {time.strftime('%H:%M:%S')}
+<b>Hora Chile:</b> {obtener_hora_chilena()}
 <b>⏱️ El caudal sigue crítico</b>"""
                     
                     enviar_telegram(mensaje)
@@ -284,7 +312,7 @@ def verificar_pozos():
 <b>Pozo:</b> {nombre}
 <b>Caudal actual:</b> {caudal} L/s
 <b>Umbral:</b> Menor a 30 L/s
-<b>Hora:</b> {time.strftime('%H:%M:%S')}"""
+<b>Hora Chile:</b> {obtener_hora_chilena()}"""
                     
                     enviar_telegram(mensaje)
                     print(f"📩 Alerta única para {nombre} (BAJO: {caudal} L/s)")
@@ -300,7 +328,7 @@ def verificar_pozos():
 <b>Pozo:</b> {nombre}
 <b>Caudal actual:</b> {caudal} L/s
 <b>Estado:</b> Operación normal
-<b>Hora:</b> {time.strftime('%H:%M:%S')}"""
+<b>Hora Chile:</b> {obtener_hora_chilena()}"""
                     
                     enviar_telegram(mensaje)
                     print(f"📩 Alerta única para {nombre} (NORMALIZADO)")
@@ -320,7 +348,7 @@ def verificar_pozos():
         raise e
 
 # ==============================
-# CONFIGURAR BOT DE TELEGRAM (CORREGIDO)
+# CONFIGURAR BOT DE TELEGRAM
 # ==============================
 async def run_bot_polling():
     """Ejecuta el bot de Telegram de forma asíncrona"""
