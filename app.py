@@ -3,6 +3,7 @@ import re
 import asyncio
 import threading
 import os
+import traceback
 from flask import Flask
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -79,7 +80,7 @@ def create_driver():
             raise e2
 
 # ==============================
-# FUNCIONES DE TELEGRAM (sin cambios)
+# FUNCIONES DE TELEGRAM
 # ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -130,11 +131,13 @@ async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # FUNCIÓN PARA ENVIAR MENSAJES
 # ==============================
 def enviar_telegram(mensaje, chat_ids=None):
+    """Envía mensaje a chats específicos o a todos los autorizados"""
     if chat_ids is None:
         chat_ids = CHAT_IDS_AUTORIZADOS
     
     for chat_id in chat_ids:
         try:
+            # Crear nuevo event loop para cada mensaje
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(bot.send_message(
@@ -313,21 +316,47 @@ def verificar_pozos():
                 
     except Exception as e:
         print(f"❌ Error en verificación: {e}")
+        traceback.print_exc()
         raise e
 
 # ==============================
-# CONFIGURAR BOT DE TELEGRAM
+# CONFIGURAR BOT DE TELEGRAM (CORREGIDO)
 # ==============================
-def iniciar_bot_telegram():
-    """Inicia el bot de Telegram en un hilo separado"""
+async def run_bot_polling():
+    """Ejecuta el bot de Telegram de forma asíncrona"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("caudales", caudales))
     
-    print("🤖 Bot de Telegram iniciado")
-    application.run_polling()
+    print("🤖 Bot de Telegram iniciado (polling)")
+    
+    # Inicializar y empezar polling
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Mantener el bot corriendo
+    while True:
+        await asyncio.sleep(1)
+
+def iniciar_bot_telegram():
+    """Inicia el bot de Telegram en un hilo separado con su propio event loop"""
+    print("🔄 Iniciando bot de Telegram en hilo separado...")
+    
+    # Crear nuevo event loop para este hilo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # Ejecutar el bot en este loop
+        loop.run_until_complete(run_bot_polling())
+    except Exception as e:
+        print(f"❌ Error en el bot de Telegram: {e}")
+        traceback.print_exc()
+    finally:
+        loop.close()
 
 # ==============================
 # FUNCIÓN PRINCIPAL PARA RENDER
@@ -340,13 +369,19 @@ def run_bot():
     try:
         # Crear driver
         driver = create_driver()
+        print("✅ Driver creado exitosamente")
         
         # Iniciar sesión
         login()
+        print("✅ Login exitoso")
         
         # Iniciar bot de Telegram en un hilo
         bot_thread = threading.Thread(target=iniciar_bot_telegram, daemon=True)
         bot_thread.start()
+        print("✅ Hilo del bot de Telegram iniciado")
+        
+        # Pequeña pausa para que el bot se inicie
+        time.sleep(5)
         
         # Bucle principal de monitoreo
         print("🔄 Iniciando monitoreo continuo (cada 2 minutos)...")
@@ -357,13 +392,16 @@ def run_bot():
                 time.sleep(120)
             except Exception as e:
                 print(f"❌ Error en el bucle principal: {e}")
+                traceback.print_exc()
                 print("🔄 Reintentando en 30 segundos...")
                 time.sleep(30)
     except Exception as e:
         print(f"❌ Error fatal: {e}")
+        traceback.print_exc()
     finally:
         if driver:
             driver.quit()
+            print("🛑 Driver cerrado")
 
 # ==============================
 # SERVIDOR FLASK PARA HEALTH CHECK
@@ -382,6 +420,8 @@ def health():
 if __name__ != '__main__':
     # En producción (Render), iniciar el bot en un hilo
     print("🚀 Iniciando en modo producción (Render)...")
+    
+    # Crear un hilo para el bot
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     print("✅ Bot iniciado en segundo plano")
