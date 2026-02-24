@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Instalar Chrome y dependencias necesarias
+# Instalar Chrome
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F '.' '{print $1}') \
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1) \
     && wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION \
     && wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/$(cat /tmp/chromedriver_$CHROME_VERSION)/chromedriver_linux64.zip \
     && unzip /tmp/chromedriver.zip chromedriver -d /usr/local/bin/ \

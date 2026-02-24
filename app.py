@@ -2,6 +2,8 @@ import time
 import re
 import asyncio
 import threading
+import os
+from flask import Flask
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -12,62 +14,68 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import TelegramError
 
 # ==============================
-# CONFIGURACIÓN LEM
+# CONFIGURACIÓN (USAR VARIABLES DE ENTORNO)
 # ==============================
-
-USERNAME = "8.496.887-0"
-PASSWORD = "8496887"
+USERNAME = os.environ.get("LEM_USERNAME", "8.496.887-0")
+PASSWORD = os.environ.get("LEM_PASSWORD", "8496887")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8556172137:AAFZVZ5d5Xj5J4ergSIvkcV9EjARFdXFYrw")
+CHAT_IDS_AUTORIZADOS = os.environ.get("CHAT_IDS", "5921135865").split(",")
 
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
-
-# ==============================
-# CONFIGURACIÓN TELEGRAM
-# ==============================
-
-TELEGRAM_TOKEN = "8556172137:AAFZVZ5d5Xj5J4ergSIvkcV9EjARFdXFYrw"
-CHAT_IDS_AUTORIZADOS = [
-    "5921135865",  # Tu ID de Telegram
-]
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
 # ==============================
 # ESTADO POZOS
 # ==============================
-
-estado_pozos = {}  # Estado actual de los pozos
-ultimos_caudales = {}  # Para guardar los últimos caudales leídos
-ultimo_reporte_horario = 0  # Timestamp del último reporte
-
-# ==============================
-# CONTROL DE ALERTAS CADA 5 MIN
-# ==============================
-
-ultima_alerta_detenido = {}  # Control para pozos DETENIDOS (0 L/s)
-ultima_alerta_critico = {}   # Control para pozos CRÍTICOS (<10 L/s)
-TIEMPO_ENTRE_ALERTAS = 300   # 300 segundos = 5 minutos
+estado_pozos = {}
+ultimos_caudales = {}
+ultimo_reporte_horario = 0
+ultima_alerta_detenido = {}
+ultima_alerta_critico = {}
+TIEMPO_ENTRE_ALERTAS = 300
 
 # ==============================
-# CHROME
+# CONFIGURACIÓN DE SELENIUM PARA RENDER
 # ==============================
-
-options = Options()
-options.add_argument("--headless=new")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-
-driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()),
-    options=options
-)
+def create_driver():
+    """Crea y configura el driver de Chrome para Render"""
+    print("🔧 Configurando Chrome driver...")
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_argument("--disable-setuid-sandbox")
+    chrome_options.add_argument("--disable-extensions")
+    
+    # Intentar diferentes formas de iniciar Chrome
+    try:
+        # Primero intentar con la ruta estándar de Linux
+        chrome_options.binary_location = "/usr/bin/google-chrome"
+        service = Service('/usr/local/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        print("✅ Chrome driver creado con ruta estándar")
+        return driver
+    except:
+        try:
+            # Segundo intento: dejar que webdriver-manager lo maneje
+            print("🔄 Intentando con webdriver-manager...")
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            print("✅ Chrome driver creado con webdriver-manager")
+            return driver
+        except Exception as e:
+            print(f"❌ Error creando driver: {e}")
+            raise e
 
 # ==============================
-# FUNCIONES DE TELEGRAM (COMANDOS)
+# FUNCIONES DE TELEGRAM (sin cambios)
 # ==============================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start"""
     chat_id = str(update.effective_chat.id)
     if chat_id in CHAT_IDS_AUTORIZADOS:
         await update.message.reply_text(
@@ -81,11 +89,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ No autorizado")
 
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /ayuda"""
     await start(update, context)
 
 async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /caudales - Muestra el estado actual de todos los pozos"""
     chat_id = str(update.effective_chat.id)
     
     if chat_id not in CHAT_IDS_AUTORIZADOS:
@@ -96,11 +102,9 @@ async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔄 Aún no hay datos disponibles. Espera la próxima actualización...")
         return
     
-    # Construir mensaje con todos los caudales
     mensaje = "<b>📊 ESTADO ACTUAL DE POZOS</b>\n\n"
     
     for nombre, caudal in ultimos_caudales.items():
-        # Determinar emoji según el caudal
         if caudal == 0:
             emoji = "🔴 DETENIDO"
         elif caudal < 10:
@@ -119,15 +123,12 @@ async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 # FUNCIÓN PARA ENVIAR MENSAJES
 # ==============================
-
 def enviar_telegram(mensaje, chat_ids=None):
-    """Envía mensaje a chats específicos o a todos los autorizados"""
     if chat_ids is None:
         chat_ids = CHAT_IDS_AUTORIZADOS
     
     for chat_id in chat_ids:
         try:
-            # CORREGIDO: Crear nuevo event loop correctamente
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(bot.send_message(
@@ -137,17 +138,14 @@ def enviar_telegram(mensaje, chat_ids=None):
             ))
             loop.close()
             print(f"✅ Mensaje enviado a chat {chat_id}")
-        except TelegramError as e:
-            print(f"❌ Error de Telegram con chat {chat_id}: {e}")
         except Exception as e:
-            print(f"❌ Error inesperado con chat {chat_id}: {e}")
+            print(f"❌ Error al enviar a {chat_id}: {e}")
         
         time.sleep(1)
 
 # ==============================
-# LOGIN
+# FUNCIONES DE LEM
 # ==============================
-
 def login():
     """Inicia sesión en el sistema LEM"""
     print("🔑 Iniciando sesión...")
@@ -161,24 +159,17 @@ def login():
     time.sleep(5)
     print("✅ Sesión iniciada correctamente")
     
-    enviar_telegram("🤖 *Sistema de monitoreo de pozos iniciado*\n\nUsa /caudales para ver el estado actual")
-
-# ==============================
-# REPORTE HORARIO
-# ==============================
+    enviar_telegram("🤖 *Sistema de monitoreo de pozos iniciado en Render*\n\nUsa /caudales para ver el estado actual")
 
 def enviar_reporte_horario():
     """Envía un reporte cada hora con el estado de todos los pozos"""
     global ultimo_reporte_horario
     
     hora_actual = time.time()
-    # Enviar solo si pasó al menos 1 hora (3600 segundos)
     if hora_actual - ultimo_reporte_horario >= 3600:
         if ultimos_caudales:
-            # Construir mensaje del reporte horario
             mensaje = f"<b>📊 REPORTE HORARIO - {time.strftime('%H:%M')}</b>\n\n"
             
-            # Contar estados
             detenidos = sum(1 for c in ultimos_caudales.values() if c == 0)
             criticos = sum(1 for c in ultimos_caudales.values() if 0 < c < 10)
             bajos = sum(1 for c in ultimos_caudales.values() if 10 <= c < 30)
@@ -205,10 +196,6 @@ def enviar_reporte_horario():
             enviar_telegram(mensaje)
             ultimo_reporte_horario = hora_actual
             print(f"📊 Reporte horario enviado - {time.strftime('%H:%M')}")
-
-# ==============================
-# VERIFICAR POZOS
-# ==============================
 
 def verificar_pozos():
     """Verifica el estado de todos los pozos"""
@@ -238,18 +225,13 @@ def verificar_pozos():
             caudal = float(match.group(1))
             print(f"📊 {nombre} → {caudal} L/s")
 
-            # Guardar en ultimos_caudales para el comando /caudales
             ultimos_caudales[nombre] = caudal
-
             estado_anterior = estado_pozos.get(nombre, "normal")
             tiempo_actual = time.time()
 
-            # 🔴 DETENIDO (0 L/s) - Alerta CADA 5 MINUTOS
+            # DETENIDO (0 L/s)
             if caudal == 0:
-                # CORREGIDO: Completar la línea que estaba truncada
                 ultima_alerta = ultima_alerta_detenido.get(nombre, 0)
-                
-                # Enviar alerta si pasaron 5 minutos desde la última
                 if tiempo_actual - ultima_alerta >= TIEMPO_ENTRE_ALERTAS:
                     mensaje = f"""<b>🚨 POZO DETENIDO (alerta cada 5 min)</b>
 
@@ -266,12 +248,9 @@ def verificar_pozos():
                 estado_pozos[nombre] = "detenido"
                 continue
 
-            # 🔴 CRÍTICO (<10) - Alerta CADA 5 MINUTOS
+            # CRÍTICO (<10)
             if 0 < caudal < 10:
-                # Verificar última alerta para este pozo
                 ultima_alerta = ultima_alerta_critico.get(nombre, 0)
-                
-                # Enviar alerta si pasaron 5 minutos desde la última
                 if tiempo_actual - ultima_alerta >= TIEMPO_ENTRE_ALERTAS:
                     mensaje = f"""<b>🔴 CAUDAL CRÍTICO (alerta cada 5 min)</b>
 
@@ -288,7 +267,7 @@ def verificar_pozos():
                 estado_pozos[nombre] = "critico"
                 continue
 
-            # 🟠 BAJO (10–29) - Solo cuando cambia
+            # BAJO (10–29)
             if 10 <= caudal < 30:
                 if estado_anterior != "bajo":
                     mensaje = f"""<b>⚠️ CAUDAL BAJO</b>
@@ -304,7 +283,7 @@ def verificar_pozos():
                 estado_pozos[nombre] = "bajo"
                 continue
 
-            # 🟢 NORMAL (>=30) - Solo cuando cambia
+            # NORMAL (>=30)
             if caudal >= 30:
                 if estado_anterior in ["bajo", "critico", "detenido"]:
                     mensaje = f"""<b>✅ POZO NORMALIZADO</b>
@@ -317,7 +296,6 @@ def verificar_pozos():
                     enviar_telegram(mensaje)
                     print(f"📩 Alerta única para {nombre} (NORMALIZADO)")
                     
-                    # Limpiar alertas periódicas cuando se normaliza
                     if nombre in ultima_alerta_detenido:
                         del ultima_alerta_detenido[nombre]
                     if nombre in ultima_alerta_critico:
@@ -325,7 +303,6 @@ def verificar_pozos():
                 
                 estado_pozos[nombre] = "normal"
         
-        # Verificar si es hora de enviar reporte horario
         enviar_reporte_horario()
                 
     except Exception as e:
@@ -335,31 +312,33 @@ def verificar_pozos():
 # ==============================
 # CONFIGURAR BOT DE TELEGRAM
 # ==============================
-
 def iniciar_bot_telegram():
     """Inicia el bot de Telegram en un hilo separado"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Agregar comandos
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("caudales", caudales))
     
-    # Iniciar bot
     print("🤖 Bot de Telegram iniciado")
     application.run_polling()
 
 # ==============================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL PARA RENDER
 # ==============================
+driver = None
 
-def main():
-    """Función principal del programa"""
+def run_bot():
+    """Función que ejecuta el bot principal"""
+    global driver
     try:
-        # Iniciar sesión en LEM
+        # Crear driver
+        driver = create_driver()
+        
+        # Iniciar sesión
         login()
         
-        # Iniciar bot de Telegram en un hilo separado
+        # Iniciar bot de Telegram en un hilo
         bot_thread = threading.Thread(target=iniciar_bot_telegram, daemon=True)
         bot_thread.start()
         
@@ -369,19 +348,43 @@ def main():
             try:
                 verificar_pozos()
                 print("⏱️ Esperando 2 minutos para la próxima verificación...")
-                time.sleep(120)  # 2 minutos
+                time.sleep(120)
             except Exception as e:
                 print(f"❌ Error en el bucle principal: {e}")
                 print("🔄 Reintentando en 30 segundos...")
                 time.sleep(30)
-                
-    except KeyboardInterrupt:
-        print("\n👋 Programa detenido por el usuario")
     except Exception as e:
         print(f"❌ Error fatal: {e}")
     finally:
-        driver.quit()
-        print("🛑 Navegador cerrado")
+        if driver:
+            driver.quit()
 
+# ==============================
+# SERVIDOR FLASK PARA HEALTH CHECK
+# ==============================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot de monitoreo de pozos está funcionando."
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+# Punto de entrada para Gunicorn
+if __name__ != '__main__':
+    # En producción (Render), iniciar el bot en un hilo
+    print("🚀 Iniciando en modo producción (Render)...")
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    print("✅ Bot iniciado en segundo plano")
+
+# Para ejecución local
 if __name__ == "__main__":
-    main()
+    print("🚀 Modo desarrollo local...")
+    # Iniciar el bot en un hilo
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    # Ejecutar Flask para pruebas locales
+    app.run(host='0.0.0.0', port=5000, debug=False)
