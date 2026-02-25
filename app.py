@@ -117,8 +117,10 @@ def obtener_fecha_hora_chilena_completa():
 # CONTROL DE INSTANCIA DEL BOT
 # ==============================
 bot_instance_running = False
-bot_instance_lock = threading.RLock()  # Usar RLock en lugar de Lock
+bot_instance_lock = threading.RLock()
 application_instance = None
+driver = None
+shutdown_flag = False
 
 # ==============================
 # CONFIGURACIÓN DE SELENIUM PARA RENDER
@@ -274,19 +276,20 @@ def login():
     fecha_hora_completa = obtener_fecha_hora_chilena_completa()
     enviar_telegram(f"🤖 *Sistema de monitoreo de pozos iniciado en Render*\n\n📅 {fecha_hora_completa} (hora Chile)\n\nUsa /caudales para ver el estado actual")
 
-def enviar_reporte_horario():
-    """Envía un reporte cada hora con el estado de todos los pozos"""
+def enviar_reporte_5min():
+    """Envía un reporte cada 5 minutos con el estado de todos los pozos"""
     global ultimo_reporte_horario
     hora_chile = obtener_hora_chilena()
     fecha_hora_completa = obtener_fecha_hora_chilena_completa()
     
     hora_actual = time.time()
     
-    if hora_actual - ultimo_reporte_horario >= 60:
-        print(f"⏰ [{hora_chile}] ¡Es hora del reporte horario!")
+    # 300 segundos = 5 minutos
+    if hora_actual - ultimo_reporte_horario >= 300:
+        print(f"⏰ [{hora_chile}] ¡Es hora del reporte de 5 minutos!")
         
         if ultimos_caudales:
-            mensaje = f"<b>📊 REPORTE HORARIO</b>\n\n"
+            mensaje = f"<b>📊 REPORTE CADA 5 MINUTOS</b>\n\n"
             mensaje += f"<b>📅 {fecha_hora_completa} (hora Chile)</b>\n\n"
             
             detenidos = sum(1 for c in ultimos_caudales.values() if c == 0)
@@ -314,20 +317,24 @@ def enviar_reporte_horario():
             
             enviar_telegram(mensaje)
             ultimo_reporte_horario = hora_actual
-            print(f"✅ [{hora_chile}] Reporte horario enviado")
+            print(f"✅ [{hora_chile}] Reporte de 5 minutos enviado")
         else:
             print(f"⚠️ [{hora_chile}] No hay datos de caudales")
 
 def verificar_pozos():
     """Verifica el estado de todos los pozos"""
-    global ultimos_caudales
+    global ultimos_caudales, shutdown_flag
     
+    if shutdown_flag:
+        return
+        
     hora_chile = obtener_hora_chilena()
     fecha_hora_completa = obtener_fecha_hora_chilena_completa()
     
     print(f"\n🔍 [{hora_chile}] Verificando pozos")
     
-    enviar_reporte_horario()
+    # Enviar reporte cada 5 minutos
+    enviar_reporte_5min()
     
     driver.get(PANEL_URL)
     time.sleep(5)
@@ -341,6 +348,9 @@ def verificar_pozos():
             return
 
         for pozo in pozos:
+            if shutdown_flag:
+                return
+                
             texto = pozo.text
             nombre = texto.split("\n")[0]
 
@@ -428,11 +438,11 @@ def verificar_pozos():
         traceback.print_exc()
 
 # ==============================
-# CONFIGURAR BOT DE TELEGRAM (VERSIÓN FINAL)
+# CONFIGURAR BOT DE TELEGRAM
 # ==============================
 async def run_bot_polling():
     """Ejecuta el bot de Telegram de forma asíncrona"""
-    global bot_instance_running, application_instance
+    global bot_instance_running, application_instance, shutdown_flag
     hora_chile = obtener_hora_chilena()
     
     with bot_instance_lock:
@@ -462,7 +472,7 @@ async def run_bot_polling():
         print(f"✅ [{hora_chile}] Bot de Telegram está escuchando comandos")
         
         # Mantener el bot corriendo
-        while bot_instance_running:
+        while not shutdown_flag and bot_instance_running:
             await asyncio.sleep(1)
             
     except Exception as e:
@@ -498,32 +508,13 @@ def iniciar_bot_telegram():
         loop.close()
 
 # ==============================
-# FUNCIÓN PRINCIPAL PARA RENDER
+# FUNCIÓN PRINCIPAL (SIN MANEJADORES DE SEÑALES EN HILOS)
 # ==============================
-driver = None
-
-def signal_handler(signum, frame):
-    """Manejador de señales para cerrar gracefulmente"""
-    hora_chile = obtener_hora_chilena()
-    print(f"\n🛑 [{hora_chile}] Señal {signum} recibida, cerrando gracefulmente...")
-    if driver:
-        try:
-            driver.quit()
-        except:
-            pass
-    liberar_lock()
-    sys.exit(0)
-
 def run_bot():
     """Función que ejecuta el bot principal"""
-    global driver, bot_instance_running
+    global driver, bot_instance_running, shutdown_flag
     
-    # Registrar manejadores de señales
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    # Registrar liberación de lock al salir
-    atexit.register(liberar_lock)
+    # NO configurar señales aquí - esto se ejecuta en un hilo
     
     # Adquirir lock de archivo
     if not adquirir_lock():
@@ -533,7 +524,7 @@ def run_bot():
     intentos = 0
     max_intentos = 3
     
-    while intentos < max_intentos:
+    while not shutdown_flag and intentos < max_intentos:
         hora_chile = obtener_hora_chilena()
         
         try:
@@ -558,16 +549,25 @@ def run_bot():
             intentos = 0
             
             print(f"🔄 [{hora_chile}] Iniciando monitoreo...")
-            while True:
+            while not shutdown_flag:
                 try:
                     verificar_pozos()
-                    print(f"⏱️ [{obtener_hora_chilena()}] Esperando 2 minutos...")
-                    time.sleep(120)
+                    if not shutdown_flag:
+                        print(f"⏱️ [{obtener_hora_chilena()}] Esperando 2 minutos...")
+                        # Esperar en intervalos pequeños para poder detectar shutdown_flag
+                        for _ in range(120):
+                            if shutdown_flag:
+                                break
+                            time.sleep(1)
                 except Exception as e:
+                    if shutdown_flag:
+                        break
                     print(f"❌ [{obtener_hora_chilena()}] Error: {e}")
                     time.sleep(30)
                     
         except Exception as e:
+            if shutdown_flag:
+                break
             intentos += 1
             print(f"❌ [{hora_chile}] Error fatal (intento {intentos}/{max_intentos}): {e}")
             
@@ -582,9 +582,12 @@ def run_bot():
                     driver.quit()
                 except:
                     pass
+    
+    liberar_lock()
+    print("🛑 Bot finalizado")
 
 # ==============================
-# SERVIDOR FLASK
+# SERVIDOR FLASK (HILO PRINCIPAL)
 # ==============================
 app = Flask(__name__)
 
@@ -597,10 +600,27 @@ def home():
 def health():
     return "OK", 200
 
+# Manejador de señales en el hilo principal
+def signal_handler(signum, frame):
+    """Manejador de señales para cerrar gracefulmente"""
+    global shutdown_flag, driver
+    hora_chile = obtener_hora_chilena()
+    print(f"\n🛑 [{hora_chile}] Señal {signum} recibida, cerrando gracefulmente...")
+    shutdown_flag = True
+    # No cerrar driver aquí, se cerrará en el hilo
+    liberar_lock()
+    sys.exit(0)
+
+# Registrar manejadores de señales en el hilo principal
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+atexit.register(liberar_lock)
+
 # Punto de entrada
 if __name__ != '__main__':
     hora_chile = obtener_hora_chilena()
     print(f"🚀 [{hora_chile}] Iniciando en producción (Render) - Instancia: {RENDER_INSTANCE_ID}")
+    # Iniciar el bot en un hilo separado
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
