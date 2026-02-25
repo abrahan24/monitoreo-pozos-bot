@@ -35,4 +35,5 @@ COPY . .
 # Verificar instalación
 RUN google-chrome --version && chromedriver --version
 
-CMD gunicorn app:app
+# CAMBIO IMPORTANTE: Usar python app.py en lugar de gunicorn
+CMD python app.py
