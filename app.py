@@ -251,5 +251,5 @@ if __name__ == "__main__":
     os.environ['WEB_CONCURRENCY'] = '1'
     
     print("🚀 Iniciando bot...")
-    Thread(target=run, daemon=True).start()
+    threading.Thread(target=run, daemon=True).start()
     app_flask.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
