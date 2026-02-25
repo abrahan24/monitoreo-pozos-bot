@@ -17,7 +17,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.error import TelegramError
+from telegram.error import TelegramError, TimedOut, NetworkError
 
 # ==============================
 # CONFIGURACIÓN (USAR VARIABLES DE ENTORNO)
@@ -31,6 +31,7 @@ RENDER_INSTANCE_ID = os.environ.get("RENDER_INSTANCE_ID", "local")
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
+# Crear una sola instancia de Bot para reutilizar
 bot = Bot(token=TELEGRAM_TOKEN)
 
 # ==============================
@@ -76,7 +77,7 @@ ultima_alerta_critico = {}
 TIEMPO_ENTRE_ALERTAS = 300
 
 # ==============================
-# ZONA HORARIA CHILE (OBLIGATORIA)
+# ZONA HORARIA CHILE
 # ==============================
 try:
     import pytz
@@ -85,9 +86,7 @@ try:
     print("✅ pytz instalado correctamente, usando hora Chile")
 except ImportError:
     PYTZ_AVAILABLE = False
-    print("❌ ERROR CRÍTICO: pytz no está instalado")
-    print("⚠️ El bot necesita pytz para funcionar correctamente")
-    print("📦 Ejecuta: pip install pytz")
+    print("⚠️ pytz no instalado, usando hora UTC")
 
 def obtener_hora_chilena():
     """Retorna la hora actual en formato HH:MM:SS con zona horaria de Chile"""
@@ -96,7 +95,7 @@ def obtener_hora_chilena():
             ahora_utc = datetime.now(pytz.UTC)
             ahora_chile = ahora_utc.astimezone(CHILE_TZ)
             return ahora_chile.strftime('%H:%M:%S')
-        except Exception as e:
+        except:
             return time.strftime('%H:%M:%S')
     else:
         return time.strftime('%H:%M:%S')
@@ -220,10 +219,10 @@ async def caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"✅ [{hora_chile}] Comando /caudales ejecutado para chat {chat_id}")
 
 # ==============================
-# FUNCIÓN PARA ENVIAR MENSAJES
+# FUNCIÓN MEJORADA PARA ENVIAR MENSAJES (SIN POOL TIMEOUT)
 # ==============================
-def enviar_telegram(mensaje, chat_ids=None):
-    """Envía mensaje a chats específicos o a todos los autorizados"""
+def enviar_telegram(mensaje, chat_ids=None, max_intentos=3):
+    """Envía mensaje a chats específicos con reintentos y sin pool timeout"""
     hora_chile = obtener_hora_chilena()
     
     if chat_ids is None:
@@ -238,22 +237,74 @@ def enviar_telegram(mensaje, chat_ids=None):
     print(f"📤 [{hora_chile}] Enviando mensaje a {len(chat_ids)} chat(s)")
     
     for chat_id in chat_ids:
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(bot.send_message(
-                chat_id=chat_id.strip(), 
-                text=mensaje,
-                parse_mode='HTML'
-            ))
-            loop.close()
-            print(f"✅ [{hora_chile}] Mensaje enviado a chat {chat_id}")
-        except TelegramError as e:
-            print(f"❌ [{hora_chile}] Error de Telegram al enviar a {chat_id}: {e}")
-        except Exception as e:
-            print(f"❌ [{hora_chile}] Error inesperado al enviar a {chat_id}: {e}")
+        intento = 0
+        enviado = False
         
-        time.sleep(1)
+        while intento < max_intentos and not enviado and not shutdown_flag:
+            try:
+                # Usar el mismo event loop para todos los mensajes
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Configurar timeout más corto para evitar pool timeout
+                result = loop.run_until_complete(
+                    asyncio.wait_for(
+                        bot.send_message(
+                            chat_id=chat_id.strip(), 
+                            text=mensaje,
+                            parse_mode='HTML',
+                            read_timeout=10,
+                            write_timeout=10,
+                            connect_timeout=10,
+                            pool_timeout=10
+                        ),
+                        timeout=15
+                    )
+                )
+                loop.close()
+                
+                print(f"✅ [{hora_chile}] Mensaje enviado a chat {chat_id}")
+                enviado = True
+                
+            except asyncio.TimeoutError:
+                intento += 1
+                if intento < max_intentos:
+                    print(f"⏳ [{hora_chile}] Timeout, reintentando {intento}/{max_intentos} para chat {chat_id}")
+                    time.sleep(2)
+                else:
+                    print(f"❌ [{hora_chile}] Timeout definitivo para chat {chat_id} después de {max_intentos} intentos")
+            
+            except (TimedOut, NetworkError) as e:
+                intento += 1
+                if intento < max_intentos:
+                    print(f"⏳ [{hora_chile}] Error de red, reintentando {intento}/{max_intentos} para chat {chat_id}: {e}")
+                    time.sleep(3)
+                else:
+                    print(f"❌ [{hora_chile}] Error de red definitivo para chat {chat_id}: {e}")
+            
+            except TelegramError as e:
+                print(f"❌ [{hora_chile}] Error de Telegram al enviar a {chat_id}: {e}")
+                if "chat not found" in str(e).lower():
+                    print(f"⚠️ [{hora_chile}] El chat {chat_id} no existe")
+                elif "blocked" in str(e).lower():
+                    print(f"⚠️ [{hora_chile}] El usuario {chat_id} ha bloqueado al bot")
+                break  # No reintentar para errores permanentes
+            
+            except Exception as e:
+                print(f"❌ [{hora_chile}] Error inesperado al enviar a {chat_id}: {e}")
+                intento += 1
+                if intento >= max_intentos:
+                    break
+                time.sleep(2)
+            
+            finally:
+                try:
+                    loop.close()
+                except:
+                    pass
+        
+        # Pequeña pausa entre envíos a diferentes chats
+        time.sleep(2)
 
 # ==============================
 # FUNCIONES DE LEM
@@ -452,7 +503,16 @@ async def run_bot_polling():
         bot_instance_running = True
     
     try:
-        application_instance = Application.builder().token(TELEGRAM_TOKEN).build()
+        # Configurar Application con pool de conexiones optimizado
+        builder = Application.builder()
+        builder.token(TELEGRAM_TOKEN)
+        builder.connect_timeout(30)
+        builder.read_timeout(30)
+        builder.write_timeout(30)
+        builder.pool_timeout(30)
+        builder.concurrent_updates(1)  # Procesar una actualización a la vez
+        
+        application_instance = builder.build()
         
         application_instance.add_handler(CommandHandler("start", start))
         application_instance.add_handler(CommandHandler("ayuda", ayuda))
@@ -466,7 +526,8 @@ async def run_bot_polling():
             drop_pending_updates=True,
             allowed_updates=['message'],
             poll_interval=1.0,
-            timeout=30
+            timeout=10,  # Timeout más corto
+            bootstrap_retries=3
         )
         
         print(f"✅ [{hora_chile}] Bot de Telegram está escuchando comandos")
@@ -508,15 +569,12 @@ def iniciar_bot_telegram():
         loop.close()
 
 # ==============================
-# FUNCIÓN PRINCIPAL (SIN MANEJADORES DE SEÑALES EN HILOS)
+# FUNCIÓN PRINCIPAL
 # ==============================
 def run_bot():
     """Función que ejecuta el bot principal"""
     global driver, bot_instance_running, shutdown_flag
     
-    # NO configurar señales aquí - esto se ejecuta en un hilo
-    
-    # Adquirir lock de archivo
     if not adquirir_lock():
         print("❌ Otra instancia ya está corriendo, saliendo...")
         return
@@ -554,7 +612,6 @@ def run_bot():
                     verificar_pozos()
                     if not shutdown_flag:
                         print(f"⏱️ [{obtener_hora_chilena()}] Esperando 2 minutos...")
-                        # Esperar en intervalos pequeños para poder detectar shutdown_flag
                         for _ in range(120):
                             if shutdown_flag:
                                 break
@@ -587,7 +644,7 @@ def run_bot():
     print("🛑 Bot finalizado")
 
 # ==============================
-# SERVIDOR FLASK (HILO PRINCIPAL)
+# SERVIDOR FLASK
 # ==============================
 app = Flask(__name__)
 
@@ -603,15 +660,14 @@ def health():
 # Manejador de señales en el hilo principal
 def signal_handler(signum, frame):
     """Manejador de señales para cerrar gracefulmente"""
-    global shutdown_flag, driver
+    global shutdown_flag
     hora_chile = obtener_hora_chilena()
     print(f"\n🛑 [{hora_chile}] Señal {signum} recibida, cerrando gracefulmente...")
     shutdown_flag = True
-    # No cerrar driver aquí, se cerrará en el hilo
     liberar_lock()
     sys.exit(0)
 
-# Registrar manejadores de señales en el hilo principal
+# Registrar manejadores de señales
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 atexit.register(liberar_lock)
@@ -620,7 +676,6 @@ atexit.register(liberar_lock)
 if __name__ != '__main__':
     hora_chile = obtener_hora_chilena()
     print(f"🚀 [{hora_chile}] Iniciando en producción (Render) - Instancia: {RENDER_INSTANCE_ID}")
-    # Iniciar el bot en un hilo separado
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
