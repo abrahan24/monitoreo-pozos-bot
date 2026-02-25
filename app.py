@@ -39,6 +39,12 @@ driver = None
 driver_lock = threading.Lock()
 
 # ==============================
+# CONTROL DE ALERTAS (AGREGADO)
+# ==============================
+ultima_alerta_detenido = {}  # Control para alertas de pozos DETENIDOS (cada 2 min)
+ultima_alerta_critico = {}   # Control para alertas de pozos CRÍTICOS (cada 2 min)
+
+# ==============================
 # HORA CHILE
 # ==============================
 try:
@@ -140,19 +146,21 @@ def login():
 
 def verificar():
     global ultimos_caudales, ultimo_reporte, driver
+    global ultima_alerta_detenido, ultima_alerta_critico  # AGREGADO
+    
     hora = ahora()
     print(f"\n🔍 Verificando - {hora}")
     sys.stdout.flush()
     
-    # Reporte cada 5 minutos
-    if time.time() - ultimo_reporte >= 300:
+    # Reporte cada 60 minutos
+    if time.time() - ultimo_reporte >= 3600:
         if ultimos_caudales:
             det = sum(1 for c in ultimos_caudales.values() if c == 0)
             cri = sum(1 for c in ultimos_caudales.values() if 0 < c < 10)
             baj = sum(1 for c in ultimos_caudales.values() if 10 <= c < 30)
             nor = sum(1 for c in ultimos_caudales.values() if c >= 30)
             
-            msg = f"<b>📊 REPORTE CADA 5 MIN</b>\n\n"
+            msg = f"<b>📊 REPORTE CADA 60 MIN</b>\n\n"
             msg += f"<b>📅 {hora}</b>\n\n"
             msg += f"🔴 Detenidos: {det}\n🔴 Críticos: {cri}\n🟠 Bajos: {baj}\n🟢 Normales: {nor}\n\n"
             msg += f"<b>Detalle:</b>\n"
@@ -183,7 +191,75 @@ def verificar():
                     caudal = float(match.group(1))
                     print(f"📊 {nombre} → {caudal} L/s")
                     sys.stdout.flush()
+                    
+                    # Guardar caudal anterior antes de actualizar
+                    caudal_anterior = ultimos_caudales.get(nombre)
                     ultimos_caudales[nombre] = caudal
+                    
+                    # ============================================
+                    # ALERTAS DE CAMBIO DE ESTADO (CADA 2 MIN)
+                    # ============================================
+                    tiempo_actual = time.time()
+                    
+                    # DETENIDO (0 L/s) - Alerta cada 2 minutos
+                    if caudal == 0:
+                        ultima_alerta = ultima_alerta_detenido.get(nombre, 0)
+                        if tiempo_actual - ultima_alerta >= 120:  # 120 seg = 2 minutos
+                            mensaje = f"""<b>🚨 POZO DETENIDO</b>
+
+<b>Pozo:</b> {nombre}
+<b>Caudal:</b> 0 L/s
+<b>📅 {hora} (hora Chile)</b>"""
+                            
+                            enviar(mensaje)
+                            ultima_alerta_detenido[nombre] = tiempo_actual
+                            print(f"⏰ Alerta DETENIDO para {nombre}")
+                    
+                    # CRÍTICO (<10) - Alerta cada 2 minutos
+                    elif 0 < caudal < 10:
+                        ultima_alerta = ultima_alerta_critico.get(nombre, 0)
+                        if tiempo_actual - ultima_alerta >= 120:  # 120 seg = 2 minutos
+                            mensaje = f"""<b>🔴 CAUDAL CRÍTICO</b>
+
+<b>Pozo:</b> {nombre}
+<b>Caudal actual:</b> {caudal} L/s
+<b>📅 {hora} (hora Chile)</b>"""
+                            
+                            enviar(mensaje)
+                            ultima_alerta_critico[nombre] = tiempo_actual
+                            print(f"⏰ Alerta CRÍTICO para {nombre}")
+                    
+                    # BAJO (10-29) - Solo cuando cambia a este estado
+                    elif 10 <= caudal < 30:
+                        # Verificar si antes NO estaba en BAJO
+                        if caudal_anterior is None or caudal_anterior >= 30 or caudal_anterior < 10:
+                            mensaje = f"""<b>⚠️ CAUDAL BAJO</b>
+
+<b>Pozo:</b> {nombre}
+<b>Caudal actual:</b> {caudal} L/s
+<b>📅 {hora} (hora Chile)</b>"""
+                            
+                            enviar(mensaje)
+                            print(f"📩 Alerta BAJO para {nombre}")
+                    
+                    # NORMAL (>=30) - Solo cuando se recupera
+                    elif caudal >= 30:
+                        # Verificar si antes estaba en estado crítico
+                        if caudal_anterior is not None and (caudal_anterior < 30 or caudal_anterior == 0):
+                            mensaje = f"""<b>✅ POZO NORMALIZADO</b>
+
+<b>Pozo:</b> {nombre}
+<b>Caudal actual:</b> {caudal} L/s
+<b>📅 {hora} (hora Chile)</b>"""
+                            
+                            enviar(mensaje)
+                            print(f"📩 Alerta NORMALIZADO para {nombre}")
+                            
+                            # Limpiar alertas periódicas cuando se normaliza
+                            if nombre in ultima_alerta_detenido:
+                                del ultima_alerta_detenido[nombre]
+                            if nombre in ultima_alerta_critico:
+                                del ultima_alerta_critico[nombre]
                     
         except Exception as e:
             print(f"❌ Error: {e}")
