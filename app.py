@@ -200,13 +200,13 @@ def main():
 # ==============================
 # FLASK (OBLIGATORIO PARA RENDER)
 # ==============================
-app_flask = Flask(__name__)
+app = Flask(__name__)  # ¡NOMBRE CORRECTO!
 
-@app_flask.route('/')
+@app.route('/')
 def home():
     return f"Bot activo - {ahora()}"
 
-@app_flask.route('/health')
+@app.route('/health')
 def health():
     return "OK", 200
 
@@ -215,12 +215,10 @@ def health():
 # ==============================
 if __name__ == "__main__":
     print("🚀 Iniciando bot...")
-    os.environ['WEB_CONCURRENCY'] = '1'  # Forzar 1 worker
+    os.environ['WEB_CONCURRENCY'] = '1'
     
-    # Iniciar hilo principal
     hilo_principal = threading.Thread(target=main, daemon=True)
     hilo_principal.start()
     
-    # Iniciar Flask
     port = int(os.environ.get('PORT', 5000))
-    app_flask.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port)  # Usando 'app' en lugar de 'app_flask'
