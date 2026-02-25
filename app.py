@@ -1,3 +1,4 @@
+import asyncio
 import time
 import re
 import threading
@@ -186,13 +187,22 @@ def verificar(driver):
 # ==============================
 # HILO DEL BOT
 # ==============================
+# ==============================
+# HILO DEL BOT (CORREGIDO)
+# ==============================
 def ejecutar_bot():
     """Ejecuta el bot de Telegram"""
+    # Crear un nuevo event loop para este hilo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("caudales", cmd_caudales))
     print("🤖 Bot de Telegram iniciado")
-    sys.stdout.flush()  # <-- FORZAR PRINT
+    sys.stdout.flush()
+    
+    # Ejecutar el bot en este loop
     app.run_polling(drop_pending_updates=True)
 
 # ==============================
