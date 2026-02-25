@@ -55,14 +55,25 @@ def crear_driver():
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    
+    # Ruta del binario de Chrome en el contenedor
     options.binary_location = "/usr/bin/google-chrome"
     
     try:
-        from selenium.webdriver.chrome.service import Service
-        return webdriver.Chrome(service=Service('/usr/local/bin/chromedriver'), options=options)
-    except:
+        # Usar ChromeDriver instalado por Docker
+        service = Service('/usr/local/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=options)
+        print("✅ Chrome driver creado exitosamente")
+        return driver
+    except Exception as e:
+        print(f"❌ Error con ChromeDriver: {e}")
+        # Fallback: webdriver-manager
         from webdriver_manager.chrome import ChromeDriverManager
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        return driver
 
 # ==============================
 # TELEGRAM
