@@ -282,7 +282,7 @@ def enviar_reporte_horario():
     
     hora_actual = time.time()
     
-    if hora_actual - ultimo_reporte_horario >= 3600:
+    if hora_actual - ultimo_reporte_horario >= 60:
         print(f"⏰ [{hora_chile}] ¡Es hora del reporte horario!")
         
         if ultimos_caudales:
