@@ -3,6 +3,7 @@ import re
 import threading
 import os
 import traceback
+import sys  # <-- AGREGAR ESTA LÍNEA
 from datetime import datetime
 from flask import Flask
 from selenium import webdriver
@@ -11,6 +12,9 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from telegram import Bot
 from telegram.ext import Application, CommandHandler
+
+# Forzar flush de prints para que se vean en Render
+sys.stdout.reconfigure(line_buffering=True)  # <-- AGREGAR ESTA LÍNEA
 
 # ==============================
 # CONFIGURACIÓN
@@ -72,8 +76,10 @@ def enviar(texto):
             loop.run_until_complete(bot.send_message(chat_id=chat, text=texto, parse_mode='HTML'))
             loop.close()
             print(f"✅ Enviado a {chat}")
+            sys.stdout.flush()  # <-- FORZAR PRINT
         except Exception as e:
             print(f"❌ Error con {chat}: {e}")
+            sys.stdout.flush()  # <-- FORZAR PRINT
         time.sleep(2)
 
 # ==============================
@@ -105,6 +111,7 @@ async def cmd_caudales(update, context):
 # ==============================
 def login(driver):
     print("🔑 Iniciando sesión...")
+    sys.stdout.flush()  # <-- FORZAR PRINT
     driver.get(LOGIN_URL)
     time.sleep(3)
     driver.find_element(By.XPATH, "//input[@placeholder='Usuario']").send_keys(USERNAME)
@@ -112,12 +119,14 @@ def login(driver):
     driver.find_element(By.ID, "loading").click()
     time.sleep(5)
     print("✅ Sesión iniciada")
+    sys.stdout.flush()  # <-- FORZAR PRINT
     enviar(f"🤖 Bot iniciado\n📅 {ahora()}")
 
 def verificar(driver):
     global ultimos_caudales, ultimo_reporte
     hora = ahora()
     print(f"\n🔍 Verificando - {hora}")
+    sys.stdout.flush()  # <-- FORZAR PRINT
     
     # Reporte cada 5 minutos
     if time.time() - ultimo_reporte >= 300:
@@ -156,10 +165,12 @@ def verificar(driver):
             if match:
                 caudal = float(match.group(1))
                 print(f"📊 {nombre} → {caudal} L/s")
+                sys.stdout.flush()  # <-- FORZAR PRINT
                 ultimos_caudales[nombre] = caudal
                 
     except Exception as e:
         print(f"❌ Error: {e}")
+        sys.stdout.flush()  # <-- FORZAR PRINT
 
 # ==============================
 # HILO DEL BOT
@@ -170,6 +181,7 @@ def ejecutar_bot():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("caudales", cmd_caudales))
     print("🤖 Bot de Telegram iniciado")
+    sys.stdout.flush()  # <-- FORZAR PRINT
     app.run_polling(drop_pending_updates=True)
 
 # ==============================
@@ -185,13 +197,16 @@ def main():
         threading.Thread(target=ejecutar_bot, daemon=True).start()
         
         print("🔄 Monitoreando cada 2 minutos...")
+        sys.stdout.flush()  # <-- FORZAR PRINT
         while True:
             verificar(driver)
             print("⏱️ Esperando 2 minutos...")
+            sys.stdout.flush()  # <-- FORZAR PRINT
             time.sleep(120)
             
     except Exception as e:
         print(f"❌ Error fatal: {e}")
+        sys.stdout.flush()  # <-- FORZAR PRINT
         traceback.print_exc()
     finally:
         if driver:
@@ -200,7 +215,7 @@ def main():
 # ==============================
 # FLASK (OBLIGATORIO PARA RENDER)
 # ==============================
-app = Flask(__name__)  # ¡NOMBRE CORRECTO!
+app = Flask(__name__)
 
 @app.route('/')
 def home():
@@ -215,10 +230,11 @@ def health():
 # ==============================
 if __name__ == "__main__":
     print("🚀 Iniciando bot...")
+    sys.stdout.flush()  # <-- FORZAR PRINT
     os.environ['WEB_CONCURRENCY'] = '1'
     
     hilo_principal = threading.Thread(target=main, daemon=True)
     hilo_principal.start()
     
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)  # Usando 'app' en lugar de 'app_flask'
+    app.run(host='0.0.0.0', port=port)
