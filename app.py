@@ -327,32 +327,48 @@ def login():
     fecha_hora_completa = obtener_fecha_hora_chilena_completa()
     enviar_telegram(f"🤖 *Sistema de monitoreo de pozos iniciado en Render*\n\n📅 {fecha_hora_completa} (hora Chile)\n\nUsa /caudales para ver el estado actual")
 
-def enviar_reporte_5min():
-    """Envía un reporte cada 5 minutos con el estado de todos los pozos"""
+def enviar_reporte_automatico():
+    """Envía un reporte automático cada X minutos con el estado de todos los pozos"""
     global ultimo_reporte_horario
     hora_chile = obtener_hora_chilena()
     fecha_hora_completa = obtener_fecha_hora_chilena_completa()
     
     hora_actual = time.time()
     
-    # 300 segundos = 5 minutos
-    if hora_actual - ultimo_reporte_horario >= 300:
-        print(f"⏰ [{hora_chile}] ¡Es hora del reporte de 5 minutos!")
+    # ============================================
+    # AJUSTA ESTE VALOR PARA CAMBIAR EL INTERVALO
+    # ============================================
+    INTERVALO_REPORTE = 300  # 300 segundos = 5 minutos
+    # Otros valores útiles:
+    # 60 = 1 minuto
+    # 300 = 5 minutos
+    # 600 = 10 minutos
+    # 900 = 15 minutos
+    # 1800 = 30 minutos
+    # 3600 = 1 hora
+    # ============================================
+    
+    if hora_actual - ultimo_reporte_horario >= INTERVALO_REPORTE:
+        print(f"⏰ [{hora_chile}] Enviando reporte automático (cada {INTERVALO_REPORTE//60} minutos)")
         
         if ultimos_caudales:
-            mensaje = f"<b>📊 REPORTE CADA 5 MINUTOS</b>\n\n"
-            mensaje += f"<b>📅 {fecha_hora_completa} (hora Chile)</b>\n\n"
+            # Construir mensaje del reporte
+            mensaje = f"<b>📊 REPORTE AUTOMÁTICO</b>\n\n"
+            mensaje += f"<b>📅 {fecha_hora_completa} (hora Chile)</b>\n"
+            mensaje += f"<b>⏱️ Intervalo: cada {INTERVALO_REPORTE//60} minutos</b>\n\n"
             
+            # Resumen
             detenidos = sum(1 for c in ultimos_caudales.values() if c == 0)
             criticos = sum(1 for c in ultimos_caudales.values() if 0 < c < 10)
             bajos = sum(1 for c in ultimos_caudales.values() if 10 <= c < 30)
             normales = sum(1 for c in ultimos_caudales.values() if c >= 30)
             
-            mensaje += f"🔴 Detenidos: {detenidos}\n"
-            mensaje += f"🔴 Críticos (<10): {criticos}\n"
-            mensaje += f"🟠 Bajos (10-29): {bajos}\n"
-            mensaje += f"🟢 Normales (≥30): {normales}\n\n"
-            mensaje += f"<b>Detalle por pozo:</b>\n"
+            mensaje += f"<b>🔴 DETENIDOS:</b> {detenidos}\n"
+            mensaje += f"<b>🔴 CRÍTICOS:</b> {criticos}\n"
+            mensaje += f"<b>🟠 BAJOS:</b> {bajos}\n"
+            mensaje += f"<b>🟢 NORMALES:</b> {normales}\n\n"
+            
+            mensaje += f"<b>📋 DETALLE POR POZO:</b>\n"
             
             for nombre, caudal in ultimos_caudales.items():
                 if caudal == 0:
@@ -364,13 +380,16 @@ def enviar_reporte_5min():
                 else:
                     estado = "🟢 NORMAL"
                 
-                mensaje += f"• {nombre}: {caudal} L/s - {estado}\n"
+                mensaje += f"• <b>{nombre}:</b> {caudal} L/s - {estado}\n"
             
+            # Enviar como mensaje normal del bot
             enviar_telegram(mensaje)
+            
+            # Actualizar timestamp
             ultimo_reporte_horario = hora_actual
-            print(f"✅ [{hora_chile}] Reporte de 5 minutos enviado")
+            print(f"✅ [{hora_chile}] Reporte automático enviado")
         else:
-            print(f"⚠️ [{hora_chile}] No hay datos de caudales")
+            print(f"⚠️ [{hora_chile}] No hay datos de caudales para enviar reporte")
 
 def verificar_pozos():
     """Verifica el estado de todos los pozos"""
@@ -384,8 +403,8 @@ def verificar_pozos():
     
     print(f"\n🔍 [{hora_chile}] Verificando pozos")
     
-    # Enviar reporte cada 5 minutos
-    enviar_reporte_5min()
+    # ENVIAR REPORTE AUTOMÁTICO (cada X minutos)
+    enviar_reporte_automatico()  # <-- CAMBIADO
     
     driver.get(PANEL_URL)
     time.sleep(5)
