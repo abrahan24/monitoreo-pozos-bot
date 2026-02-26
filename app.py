@@ -278,9 +278,7 @@ async def main():
 
     asyncio.create_task(monitor.loop(app))
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    await app.run_polling(drop_pending_updates=True)
 
     print("🚀 Bot iniciado correctamente en Render Starter")
 
