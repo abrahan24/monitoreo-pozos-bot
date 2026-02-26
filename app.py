@@ -266,24 +266,24 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ==========================
 
-async def main():
+def main():
 
     monitor = Monitor()
-    await monitor.iniciar()
 
     app = Application.builder().token(TOKEN).build()
     app.bot_data["monitor"] = monitor
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
 
-    # Lanzamos el monitor en segundo plano
-    asyncio.create_task(monitor.loop(app))
+    async def post_init(app: Application):
+        await monitor.iniciar()
+        asyncio.create_task(monitor.loop(app))
+        print("🚀 Bot iniciado correctamente en Render Starter")
 
-    print("🚀 Bot iniciado correctamente en Render Starter")
+    app.post_init = post_init
 
-    # SOLO esto. Nada más.
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
