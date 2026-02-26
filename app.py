@@ -24,13 +24,17 @@ PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 21600  # 6 horas
+CHILE_TZ = ZoneInfo("America/Santiago")
 
 # ==========================
 # UTILIDADES
 # ==========================
 
 def ahora():
-    return datetime.now(ZoneInfo("America/Santiago")).strftime("%d/%m/%Y %H:%M:%S")
+    return datetime.now(CHILE_TZ).strftime("%d/%m/%Y %H:%M:%S")
+
+def ahora_dt():
+    return datetime.now(CHILE_TZ)
 
 
 def estado_caudal(valor):
@@ -56,10 +60,13 @@ class Monitor:
 
         self.ultimos = {}
         self.alertas = {}
-        self.ultimo_reporte = 0
-        self.inicio_browser = 0
+        self.ultimo_reporte = None
+        self.inicio_browser = None
 
     async def iniciar(self):
+
+        if self.context:
+            await self.context.close()
 
         if self.browser:
             await self.browser.close()
@@ -79,7 +86,7 @@ class Monitor:
         self.page = await self.context.new_page()
 
         await self.login()
-        self.inicio_browser = time.time()
+        self.inicio_browser = ahora_dt()
 
         print("🟢 Navegador iniciado correctamente")
 
@@ -132,12 +139,12 @@ class Monitor:
     async def procesar_alertas(self, app, nombre, caudal, anterior):
 
         estado, emoji = estado_caudal(caudal)
-        ahora_ts = time.time()
+        ahora_ts = ahora_dt()
 
         if estado in ["DETENIDO", "CRÍTICO"]:
-            ultima_alerta = self.alertas.get(nombre, 0)
+            ultima_alerta = self.alertas.get(nombre)
 
-            if ahora_ts - ultima_alerta >= 120:
+            if not ultima_alerta or (ahora_ts - ultima_alerta).total_seconds() >= 120:
                 mensaje = (
                     f"<b>{emoji} {estado}</b>\n\n"
                     f"<b>Pozo:</b> {nombre}\n"
@@ -161,7 +168,10 @@ class Monitor:
 
     async def reporte_horario(self, app):
 
-        if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
+        ahora_actual = ahora_dt()
+
+        if self.ultimo_reporte and \
+        (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
             return
 
         if not self.ultimos:
@@ -189,14 +199,15 @@ class Monitor:
         )
 
         await self.enviar(app, mensaje)
-        self.ultimo_reporte = time.time()
+        self.ultimo_reporte = ahora_actual
 
     async def loop(self, app: Application):
 
         while True:
             try:
 
-                if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
+                if self.inicio_browser and \
+                    (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
                     print("♻ Reinicio preventivo del navegador")
                     await self.iniciar()
 
