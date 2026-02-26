@@ -20,8 +20,9 @@ CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
-CHECK_INTERVAL = 120  # segundos
-REPORTE_INTERVAL = 3600  # 1 hora
+CHECK_INTERVAL = 120
+REPORTE_INTERVAL = 3600
+RESTART_BROWSER_INTERVAL = 21600  # 6 horas
 
 
 # ==========================
@@ -43,7 +44,7 @@ def estado_caudal(valor):
 
 
 # ==========================
-# MONITOR PLAYWRIGHT
+# MONITOR
 # ==========================
 
 class Monitor:
@@ -57,19 +58,29 @@ class Monitor:
         self.ultimos = {}
         self.alertas = {}
         self.ultimo_reporte = 0
+        self.inicio_browser = 0
 
     async def iniciar(self):
+        if self.browser:
+            await self.browser.close()
+
         self.playwright = await async_playwright().start()
 
         self.browser = await self.playwright.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
         )
 
         self.context = await self.browser.new_context()
         self.page = await self.context.new_page()
 
         await self.login()
+        self.inicio_browser = time.time()
+        print("🟢 Navegador iniciado correctamente")
 
     async def login(self):
         print("🔐 Iniciando sesión...")
@@ -80,11 +91,17 @@ class Monitor:
         await self.page.click("#loading")
 
         await self.page.wait_for_timeout(5000)
-        print("✅ Login realizado")
 
     async def obtener_datos(self):
         await self.page.goto(PANEL_URL, timeout=60000)
         await self.page.wait_for_timeout(5000)
+
+        # Si volvió al login, reloguear
+        if "login" in self.page.url.lower():
+            print("⚠ Sesión expirada. Reintentando login...")
+            await self.login()
+            await self.page.goto(PANEL_URL, timeout=60000)
+            await self.page.wait_for_timeout(5000)
 
         elementos = await self.page.query_selector_all("#insidethepopup_alerta .col-lg-2")
 
@@ -164,6 +181,11 @@ class Monitor:
     async def loop(self, app: Application):
         while True:
             try:
+                # Reinicio preventivo cada 6 horas
+                if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
+                    print("♻ Reinicio preventivo del navegador")
+                    await self.iniciar()
+
                 datos = await self.obtener_datos()
 
                 for nombre, caudal in datos.items():
@@ -174,14 +196,14 @@ class Monitor:
                 await self.reporte_horario(app)
 
             except Exception as e:
-                print("Error scraping:", e)
-                await self.login()
+                print("❌ Error en scraping:", e)
+                await self.iniciar()
 
             await asyncio.sleep(CHECK_INTERVAL)
 
 
 # ==========================
-# FLASK (RENDER KEEP ALIVE)
+# FLASK
 # ==========================
 
 flask_app = Flask(__name__)
@@ -196,7 +218,7 @@ def health():
 
 
 # ==========================
-# COMANDO TELEGRAM
+# TELEGRAM COMMAND
 # ==========================
 
 async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,7 +263,7 @@ async def main():
         lambda: flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
     )
 
-    print("🚀 Bot iniciado correctamente")
+    print("🚀 Bot iniciado en Render Starter")
     await app.run_polling()
 
 
