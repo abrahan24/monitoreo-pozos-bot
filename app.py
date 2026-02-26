@@ -276,13 +276,14 @@ async def main():
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
 
+    # Lanzamos el monitor en segundo plano
     asyncio.create_task(monitor.loop(app))
-
-    await app.run_polling(drop_pending_updates=True)
 
     print("🚀 Bot iniciado correctamente en Render Starter")
 
-    await asyncio.Event().wait()
+    # SOLO esto. Nada más.
+    await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
