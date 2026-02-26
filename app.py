@@ -1,488 +1,268 @@
-import time
-import re
-import threading
 import os
-import traceback
-import sys
+import re
 import asyncio
+import time
 from datetime import datetime
 from flask import Flask
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from telegram import Bot
+from selenium.common.exceptions import TimeoutException
 from telegram.ext import Application, CommandHandler
-import requests
+from telegram import Bot
 
-# Forzar flush de prints
-sys.stdout.reconfigure(line_buffering=True)
-
-# ==============================
-# CONFIGURACIÓN
-# ==============================
-USERNAME = os.environ.get("LEM_USERNAME", "8.496.887-0")
-PASSWORD = os.environ.get("LEM_PASSWORD", "8496887")
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "8556172137:AAFZVZ5d5Xj5J4ergSIvkcV9EjARFdXFYrw")
-CHATS = [c.strip() for c in os.environ.get("CHAT_IDS", "5921135865").split(",") if c.strip()]
+# =============================
+# CONFIG
+# =============================
+USERNAME = os.getenv("LEM_USERNAME", "8.496.887-0")
+PASSWORD = os.getenv("LEM_PASSWORD", "8496887")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "TU_TOKEN")
+CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "123456").split(",") if c.strip()]
 
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
-bot = Bot(token=TOKEN)
+# =============================
+# UTILIDADES
+# =============================
+def ahora():
+    return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-# ==============================
-# ESTADO
-# ==============================
-ultimos_caudales = {}
-ultimo_reporte = 0
-driver = None
-driver_lock = threading.Lock()
-bot_iniciado = False
-bot_lock = threading.Lock()
+def estado_caudal(c):
+    if c == 0:
+        return "DETENIDO", "🔴"
+    if c < 10:
+        return "CRÍTICO", "🔴"
+    if c < 30:
+        return "BAJO", "🟠"
+    return "NORMAL", "🟢"
 
-# ==============================
-# CONTROL DE ALERTAS
-# ==============================
-ultima_alerta_detenido = {}
-ultima_alerta_critico = {}
+# =============================
+# MONITOR
+# =============================
+class Monitor:
 
-# ==============================
-# HORA CHILE
-# ==============================
-try:
-    import pytz
-    chile = pytz.timezone('America/Santiago')
-    def ahora():
-        return datetime.now(pytz.UTC).astimezone(chile).strftime('%d/%m/%Y %H:%M:%S')
-except:
-    def ahora():
-        return datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    def __init__(self):
+        self.driver = None
+        self.ultimos = {}
+        self.alertas = {}
+        self.ultimo_reporte = 0
+        self.bot = Bot(TOKEN)
 
-# ==============================
-# CHROME (MEJORADO)
-# ==============================
-def crear_driver():
-    """Crea driver con mejor configuración de timeouts"""
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--page-load-strategy=eager")  # No esperar recursos secundarios
-    options.add_argument("--disable-web-security")
-    options.add_argument("--disable-features=VizDisplayCompositor")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.binary_location = "/usr/bin/google-chrome"
-    
-    try:
-        service = Service('/usr/local/bin/chromedriver')
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(60)  # Timeout de 60 segundos
-        driver.set_script_timeout(60)
-        print("✅ Chrome driver creado exitosamente")
-        return driver
-    except Exception as e:
-        print(f"❌ Error con ChromeDriver: {e}")
-        from webdriver_manager.chrome import ChromeDriverManager
-        service = Service(ChromeDriverManager().install())
+    # -------------------------
+    # DRIVER
+    # -------------------------
+    def _crear_driver(self):
+        options = Options()
+        for arg in [
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--window-size=1920,1080",
+            "--page-load-strategy=eager"
+        ]:
+            options.add_argument(arg)
+
+        options.binary_location = "/usr/bin/google-chrome"
+        service = Service("/usr/local/bin/chromedriver")
+
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(60)
         driver.set_script_timeout(60)
         return driver
 
-def verificar_driver():
-    """Verifica si el driver sigue funcionando"""
-    global driver
-    try:
-        driver.current_url
-        return True
-    except:
-        return False
+    async def crear_driver(self):
+        self.driver = await asyncio.to_thread(self._crear_driver)
 
-# ==============================
-# TELEGRAM (MEJORADO)
-# ==============================
-def enviar(texto, max_intentos=3):
-    """Envía mensaje con reintentos"""
-    for chat in CHATS:
-        for intento in range(max_intentos):
+    # -------------------------
+    # LOGIN
+    # -------------------------
+    def _login(self):
+        self.driver.get(LOGIN_URL)
+        time.sleep(3)
+        self.driver.find_element(By.XPATH, "//input[@placeholder='Usuario']").send_keys(USERNAME)
+        self.driver.find_element(By.XPATH, "//input[@placeholder='Contraseña']").send_keys(PASSWORD)
+        self.driver.find_element(By.ID, "loading").click()
+        time.sleep(5)
+
+    async def login(self):
+        await asyncio.to_thread(self._login)
+        await self.enviar(f"🤖 Bot iniciado\n📅 {ahora()}")
+
+    # -------------------------
+    # TELEGRAM
+    # -------------------------
+    async def enviar(self, texto):
+        for chat in CHATS:
             try:
-                url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-                data = {
-                    "chat_id": chat,
-                    "text": texto,
-                    "parse_mode": "HTML"
-                }
-                response = requests.post(url, data=data, timeout=10)
-                if response.status_code == 200:
-                    print(f"✅ Enviado a {chat}")
-                    break
-                else:
-                    print(f"❌ Error {response.status_code} con {chat}, intento {intento + 1}")
+                await self.bot.send_message(chat_id=chat, text=texto, parse_mode="HTML")
             except Exception as e:
-                print(f"❌ Error con {chat}, intento {intento + 1}: {e}")
-                if intento < max_intentos - 1:
-                    time.sleep(2)
-                else:
-                    print(f"❌ Falló envío a {chat} después de {max_intentos} intentos")
-        time.sleep(1)
+                print(f"Error Telegram {chat}: {e}")
 
-# ==============================
-# COMANDOS
-# ==============================
-async def cmd_start(update, context):
-    if str(update.effective_chat.id) in CHATS:
-        await update.message.reply_text(
-            "🤖 *Bot de Monitoreo de Pozos*\n\n"
-            "Comandos disponibles:\n"
-            "/caudales - Ver estado actual de todos los pozos\n"
-            "/ayuda - Mostrar esta ayuda",
-            parse_mode='Markdown'
+    # -------------------------
+    # PROCESAR ALERTAS
+    # -------------------------
+    async def procesar_alerta(self, nombre, caudal, anterior):
+        estado, emoji = estado_caudal(caudal)
+        ahora_ts = time.time()
+
+        # alertas repetidas
+        if estado in ["DETENIDO", "CRÍTICO"]:
+            ultima = self.alertas.get(nombre, 0)
+            if ahora_ts - ultima >= 120:
+                await self.enviar(
+                    f"<b>{emoji} {estado}</b>\n\n"
+                    f"<b>Pozo:</b> {nombre}\n"
+                    f"<b>Caudal:</b> {caudal} L/s\n"
+                    f"<b>📅 {ahora()}</b>"
+                )
+                self.alertas[nombre] = ahora_ts
+
+        # cambio de estado
+        elif anterior is not None:
+            estado_ant, _ = estado_caudal(anterior)
+            if estado != estado_ant:
+                await self.enviar(
+                    f"<b>{emoji} CAMBIO DE ESTADO</b>\n\n"
+                    f"<b>Pozo:</b> {nombre}\n"
+                    f"<b>Nuevo estado:</b> {estado}\n"
+                    f"<b>Caudal:</b> {caudal} L/s\n"
+                    f"<b>📅 {ahora()}</b>"
+                )
+
+    # -------------------------
+    # SCRAPING
+    # -------------------------
+    def _obtener_datos(self):
+        self.driver.get(PANEL_URL)
+        time.sleep(5)
+
+        contenedor = self.driver.find_element(By.ID, "insidethepopup_alerta")
+        pozos = contenedor.find_elements(By.CLASS_NAME, "col-lg-2")
+
+        resultados = {}
+
+        for pozo in pozos:
+            texto = pozo.text
+            nombre = texto.split("\n")[0]
+            match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
+            if match:
+                resultados[nombre] = float(match.group(1))
+
+        return resultados
+
+    async def verificar(self):
+        try:
+            datos = await asyncio.to_thread(self._obtener_datos)
+
+            for nombre, caudal in datos.items():
+                anterior = self.ultimos.get(nombre)
+                self.ultimos[nombre] = caudal
+                await self.procesar_alerta(nombre, caudal, anterior)
+
+            await self.reporte_horario()
+
+        except TimeoutException:
+            print("Timeout, reiniciando driver...")
+            await self.crear_driver()
+            await self.login()
+
+    # -------------------------
+    # REPORTE
+    # -------------------------
+    async def reporte_horario(self):
+        if time.time() - self.ultimo_reporte < 3600:
+            return
+
+        det = sum(1 for c in self.ultimos.values() if c == 0)
+        cri = sum(1 for c in self.ultimos.values() if 0 < c < 10)
+        baj = sum(1 for c in self.ultimos.values() if 10 <= c < 30)
+        nor = sum(1 for c in self.ultimos.values() if c >= 30)
+
+        msg = (
+            f"<b>📊 REPORTE HORARIO</b>\n\n"
+            f"🔴 Detenidos: {det}\n"
+            f"🔴 Críticos: {cri}\n"
+            f"🟠 Bajos: {baj}\n"
+            f"🟢 Normales: {nor}\n\n"
+            f"<b>📅 {ahora()}</b>"
         )
 
-async def cmd_ayuda(update, context):
-    await cmd_start(update, context)
+        await self.enviar(msg)
+        self.ultimo_reporte = time.time()
 
+    # -------------------------
+    # LOOP PRINCIPAL
+    # -------------------------
+    async def loop(self):
+        await self.crear_driver()
+        await self.login()
+
+        while True:
+            await self.verificar()
+            await asyncio.sleep(120)
+
+
+# =============================
+# TELEGRAM COMMANDS
+# =============================
 async def cmd_caudales(update, context):
-    if str(update.effective_chat.id) not in CHATS:
+    monitor: Monitor = context.bot_data["monitor"]
+
+    if not monitor.ultimos:
+        await update.message.reply_text("🔄 Cargando datos...")
         return
-    
-    if not ultimos_caudales:
-        await update.message.reply_text("🔄 Cargando datos, espera un momento...")
-        return
-    
-    msg = f"<b>📊 ESTADO ACTUAL DE POZOS</b>\n\n"
-    for n, c in ultimos_caudales.items():
-        if c == 0:
-            e = "🔴 DETENIDO"
-        elif c < 10:
-            e = "🔴 CRÍTICO"
-        elif c < 30:
-            e = "🟠 BAJO"
-        else:
-            e = "🟢 NORMAL"
-        msg += f"<b>{n}:</b> {c} L/s - {e}\n"
+
+    msg = "<b>📊 ESTADO ACTUAL</b>\n\n"
+    for n, c in monitor.ultimos.items():
+        estado, emoji = estado_caudal(c)
+        msg += f"<b>{n}:</b> {c} L/s - {emoji} {estado}\n"
+
     msg += f"\n🕐 {ahora()}"
-    
-    try:
-        await update.message.reply_text(msg, parse_mode='HTML')
-    except Exception as e:
-        print(f"❌ Error enviando caudales: {e}")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
-# ==============================
-# FUNCIONES LEM (MEJORADAS)
-# ==============================
-def login():
-    """Inicia sesión con reintentos"""
-    global driver
-    max_intentos = 3
-    
-    for intento in range(max_intentos):
-        try:
-            print(f"🔑 Iniciando sesión (intento {intento + 1})...")
-            sys.stdout.flush()
-            
-            driver.set_page_load_timeout(60)
-            driver.get(LOGIN_URL)
-            time.sleep(3)
-            
-            driver.find_element(By.XPATH, "//input[@placeholder='Usuario']").send_keys(USERNAME)
-            driver.find_element(By.XPATH, "//input[@placeholder='Contraseña']").send_keys(PASSWORD)
-            driver.find_element(By.ID, "loading").click()
-            time.sleep(5)
-            
-            print("✅ Sesión iniciada")
-            sys.stdout.flush()
-            enviar(f"🤖 Bot iniciado correctamente\n📅 {ahora()}")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Error en login (intento {intento + 1}): {e}")
-            sys.stdout.flush()
-            if intento < max_intentos - 1:
-                time.sleep(10)
-    
-    return False
 
-def verificar():
-    """Verifica pozos con mejor manejo de errores"""
-    global ultimos_caudales, ultimo_reporte, driver
-    global ultima_alerta_detenido, ultima_alerta_critico
-    
-    hora = ahora()
-    print(f"\n🔍 Verificando pozos - {hora}")
-    sys.stdout.flush()
-    
-    # Verificar si el driver está vivo
-    if not verificar_driver():
-        print("⚠️ Driver no responde, recreando...")
-        try:
-            driver.quit()
-        except:
-            pass
-        driver = crear_driver()
-        if not login():
-            print("❌ No se pudo reiniciar sesión")
-            return
-    
-    # Reporte cada 60 minutos
-    if time.time() - ultimo_reporte >= 3600 and ultimos_caudales:
-        det = sum(1 for c in ultimos_caudales.values() if c == 0)
-        cri = sum(1 for c in ultimos_caudales.values() if 0 < c < 10)
-        baj = sum(1 for c in ultimos_caudales.values() if 10 <= c < 30)
-        nor = sum(1 for c in ultimos_caudales.values() if c >= 30)
-        
-        msg = f"<b>📊 REPORTE HORARIO</b>\n\n"
-        msg += f"<b>📅 {hora}</b>\n\n"
-        msg += f"🔴 Detenidos: {det}\n"
-        msg += f"🔴 Críticos (<10): {cri}\n"
-        msg += f"🟠 Bajos (10-29): {baj}\n"
-        msg += f"🟢 Normales (≥30): {nor}\n\n"
-        msg += f"<b>Detalle por pozo:</b>\n"
-        
-        for n, c in ultimos_caudales.items():
-            if c == 0:
-                e = "🔴 DETENIDO"
-            elif c < 10:
-                e = "🔴 CRÍTICO"
-            elif c < 30:
-                e = "🟠 BAJO"
-            else:
-                e = "🟢 NORMAL"
-            msg += f"• {n}: {c} L/s - {e}\n"
-        
-        enviar(msg)
-        ultimo_reporte = time.time()
-    
-    # Obtener datos
-    try:
-        with driver_lock:
-            driver.set_page_load_timeout(90)
-            driver.get(PANEL_URL)
-            time.sleep(8)
-            
-            contenedor = driver.find_element(By.ID, "insidethepopup_alerta")
-            pozos = contenedor.find_elements(By.CLASS_NAME, "col-lg-2")
-            
-            pozos_procesados = 0
-            for pozo in pozos:
-                try:
-                    texto = pozo.text
-                    nombre = texto.split("\n")[0]
-                    match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
-                    
-                    if match:
-                        caudal = float(match.group(1))
-                        print(f"📊 {nombre} → {caudal} L/s")
-                        sys.stdout.flush()
-                        
-                        caudal_anterior = ultimos_caudales.get(nombre)
-                        ultimos_caudales[nombre] = caudal
-                        pozos_procesados += 1
-                        
-                        tiempo_actual = time.time()
-                        
-                        # DETENIDO (0 L/s) - Alerta cada 2 minutos
-                        if caudal == 0:
-                            ultima_alerta = ultima_alerta_detenido.get(nombre, 0)
-                            if tiempo_actual - ultima_alerta >= 120:
-                                mensaje = f"""<b>🚨 POZO DETENIDO</b>
-
-<b>Pozo:</b> {nombre}
-<b>Caudal:</b> 0 L/s
-<b>📅 {hora}</b>"""
-                                
-                                enviar(mensaje)
-                                ultima_alerta_detenido[nombre] = tiempo_actual
-                                print(f"⏰ Alerta DETENIDO para {nombre}")
-                        
-                        # CRÍTICO (<10) - Alerta cada 2 minutos
-                        elif 0 < caudal < 10:
-                            ultima_alerta = ultima_alerta_critico.get(nombre, 0)
-                            if tiempo_actual - ultima_alerta >= 120:
-                                mensaje = f"""<b>🔴 CAUDAL CRÍTICO</b>
-
-<b>Pozo:</b> {nombre}
-<b>Caudal actual:</b> {caudal} L/s
-<b>📅 {hora}</b>"""
-                                
-                                enviar(mensaje)
-                                ultima_alerta_critico[nombre] = tiempo_actual
-                                print(f"⏰ Alerta CRÍTICO para {nombre}")
-                        
-                        # BAJO (10-29) - Solo cuando cambia
-                        elif 10 <= caudal < 30:
-                            if caudal_anterior is None or caudal_anterior >= 30 or caudal_anterior < 10:
-                                mensaje = f"""<b>⚠️ CAUDAL BAJO</b>
-
-<b>Pozo:</b> {nombre}
-<b>Caudal actual:</b> {caudal} L/s
-<b>📅 {hora}</b>"""
-                                
-                                enviar(mensaje)
-                                print(f"📩 Alerta BAJO para {nombre}")
-                        
-                        # NORMAL (>=30) - Solo cuando se recupera
-                        elif caudal >= 30:
-                            if caudal_anterior is not None and (caudal_anterior < 30 or caudal_anterior == 0):
-                                mensaje = f"""<b>✅ POZO NORMALIZADO</b>
-
-<b>Pozo:</b> {nombre}
-<b>Caudal actual:</b> {caudal} L/s
-<b>📅 {hora}</b>"""
-                                
-                                enviar(mensaje)
-                                print(f"📩 Alerta NORMALIZADO para {nombre}")
-                                
-                                if nombre in ultima_alerta_detenido:
-                                    del ultima_alerta_detenido[nombre]
-                                if nombre in ultima_alerta_critico:
-                                    del ultima_alerta_critico[nombre]
-                    
-                except Exception as e:
-                    print(f"⚠️ Error procesando pozo: {e}")
-                    continue
-            
-            print(f"✅ Procesados {pozos_procesados} pozos")
-            sys.stdout.flush()
-            
-    except TimeoutException:
-        print("❌ Timeout al cargar la página")
-        sys.stdout.flush()
-        # Recrear driver
-        try:
-            driver.quit()
-        except:
-            pass
-        driver = crear_driver()
-        login()
-        
-    except Exception as e:
-        print(f"❌ Error en verificación: {e}")
-        sys.stdout.flush()
-        traceback.print_exc()
-
-# ==============================
-# HILO DE MONITOREO
-# ==============================
-def hilo_monitoreo():
-    """Hilo que ejecuta el monitoreo de pozos"""
-    global driver
-    reintentos = 0
-    
-    while True:
-        try:
-            if driver is None or not verificar_driver():
-                driver = crear_driver()
-                if not login():
-                    print("❌ No se pudo iniciar sesión, reintentando en 60s...")
-                    time.sleep(60)
-                    continue
-            
-            print("🔄 Monitoreando cada 2 minutos...")
-            sys.stdout.flush()
-            reintentos = 0  # Resetear contador de reintentos
-            
-            while True:
-                try:
-                    verificar()
-                    print("⏱️ Esperando 2 minutos...")
-                    sys.stdout.flush()
-                    time.sleep(120)
-                except Exception as e:
-                    print(f"❌ Error en ciclo de verificación: {e}")
-                    sys.stdout.flush()
-                    time.sleep(30)
-                    break  # Salir para reiniciar driver
-                    
-        except Exception as e:
-            reintentos += 1
-            print(f"❌ Error fatal en monitoreo (reintento {reintentos}): {e}")
-            sys.stdout.flush()
-            traceback.print_exc()
-            
-            tiempo_espera = min(300, 60 * reintentos)  # Espera progresiva
-            print(f"⏱️ Reintentando en {tiempo_espera} segundos...")
-            time.sleep(tiempo_espera)
-            
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
-                driver = None
-
-# ==============================
-# FLASK
-# ==============================
+# =============================
+# FLASK HEALTH
+# =============================
 app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
-    estado_driver = "✅ Activo" if driver and verificar_driver() else "❌ Inactivo"
-    return f"""
-    <html>
-        <head><title>Bot de Pozos</title></head>
-        <body style="font-family: Arial; padding: 20px;">
-            <h1>🤖 Bot de Monitoreo de Pozos</h1>
-            <p><b>Estado:</b> Activo</p>
-            <p><b>Hora Chile:</b> {ahora()}</p>
-            <p><b>Driver Chrome:</b> {estado_driver}</p>
-            <p><b>Pozos monitoreados:</b> {len(ultimos_caudales)}</p>
-            <p><b>Chats autorizados:</b> {len(CHATS)}</p>
-            <p><a href="/health">Health Check</a></p>
-        </body>
-    </html>
-    """
+    return "Bot activo"
 
-@app.route('/health')
+@app.route("/health")
 def health():
-    if driver and verificar_driver():
-        return "OK", 200
-    else:
-        return "Driver no disponible", 503
+    return "OK", 200
 
-# ==============================
-# INICIO
-# ==============================
-if __name__ == "__main__":
-    print("🚀 Iniciando bot de monitoreo de pozos...")
-    print(f"📅 Hora Chile: {ahora()}")
-    print(f"📱 Chats autorizados: {CHATS}")
-    sys.stdout.flush()
-    
-    # Configurar entorno
-    os.environ['WEB_CONCURRENCY'] = '1'
-    
-    # Iniciar monitoreo en un hilo secundario
-    monitor_thread = threading.Thread(target=hilo_monitoreo, daemon=True)
-    monitor_thread.start()
-    print("✅ Hilo de monitoreo iniciado")
-    sys.stdout.flush()
-    
-    # Iniciar Flask en un hilo separado
-    port = int(os.environ.get('PORT', 5000))
-    flask_thread = threading.Thread(
-        target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
-        daemon=True
-    )
-    flask_thread.start()
-    print(f"✅ Flask iniciado en puerto {port}")
-    sys.stdout.flush()
-    
-    # Iniciar bot de Telegram en el hilo principal
-    print("🤖 Iniciando bot de Telegram...")
-    sys.stdout.flush()
-    
+
+# =============================
+# MAIN ASYNC
+# =============================
+async def main():
+    monitor = Monitor()
+
     telegram_app = Application.builder().token(TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", cmd_start))
-    telegram_app.add_handler(CommandHandler("ayuda", cmd_ayuda))
+    telegram_app.bot_data["monitor"] = monitor
+
     telegram_app.add_handler(CommandHandler("caudales", cmd_caudales))
-    
-    # Ejecutar bot (bloquea el hilo principal)
-    print("✅ Bot de Telegram escuchando comandos")
-    sys.stdout.flush()
-    telegram_app.run_polling(drop_pending_updates=True)
+
+    # iniciar monitor en background
+    asyncio.create_task(monitor.loop())
+
+    # iniciar telegram
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
+
+    # iniciar flask en thread
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, lambda: app.run(host="0.0.0.0", port=5000, use_reloader=False))
+
+    await telegram_app.updater.idle()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
