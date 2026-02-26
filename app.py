@@ -158,72 +158,71 @@ class Monitor:
                 )
                 await self.enviar(app, mensaje)
 
-async def reporte_horario(self, app):
-    if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
-        return
+    async def reporte_horario(self, app):
+        if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
+            return
 
-    if not self.ultimos:
-        return
+        if not self.ultimos:
+            return
 
-    detenidos = sum(1 for v in self.ultimos.values() if v == 0)
-    criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
-    bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
-    normales = sum(1 for v in self.ultimos.values() if v >= 30)
+        detenidos = sum(1 for v in self.ultimos.values() if v == 0)
+        criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
+        bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
+        normales = sum(1 for v in self.ultimos.values() if v >= 30)
 
-    # 🔹 Ordenar pozos alfabéticamente
-    pozos_ordenados = sorted(self.ultimos.items())
+        # 🔹 Ordenar pozos alfabéticamente
+        pozos_ordenados = sorted(self.ultimos.items())
 
-    detalle_pozos = ""
-    for nombre, caudal in pozos_ordenados:
+        detalle_pozos = ""
+        for nombre, caudal in pozos_ordenados:
 
-        if caudal == 0:
-            estado = "🔴"
-        elif 0 < caudal < 10:
-            estado = "🔴"
-        elif 10 <= caudal < 30:
-            estado = "🟠"
-        else:
-            estado = "🟢"
+            if caudal == 0:
+                estado = "🔴"
+            elif 0 < caudal < 10:
+                estado = "🔴"
+            elif 10 <= caudal < 30:
+                estado = "🟠"
+            else:
+                estado = "🟢"
 
-        detalle_pozos += f"{estado} <b>{nombre}</b>: {caudal} L/s\n"
+            detalle_pozos += f"{estado} <b>{nombre}</b>: {caudal} L/s\n"
 
-    mensaje = (
-        f"<b>📊 REPORTE HORARIO</b>\n\n"
-        f"🔴 Detenidos: {detenidos}\n"
-        f"🔴 Críticos: {criticos}\n"
-        f"🟠 Bajos: {bajos}\n"
-        f"🟢 Normales: {normales}\n\n"
-        f"<b>📍 DETALLE POR POZO</b>\n"
-        f"{detalle_pozos}\n"
-        f"<b>📅 {ahora()}</b>"
-    )
+        mensaje = (
+            f"<b>📊 REPORTE HORARIO</b>\n\n"
+            f"🔴 Detenidos: {detenidos}\n"
+            f"🔴 Críticos: {criticos}\n"
+            f"🟠 Bajos: {bajos}\n"
+            f"🟢 Normales: {normales}\n\n"
+            f"<b>📍 DETALLE POR POZO</b>\n"
+            f"{detalle_pozos}\n"
+            f"<b>📅 {ahora()}</b>"
+        )
 
-    await self.enviar(app, mensaje)
-    self.ultimo_reporte = time.time()
+        await self.enviar(app, mensaje)
+        self.ultimo_reporte = time.time()
 
-    async def loop(self, app: Application):
-        while True:
-            try:
-                # Reinicio preventivo cada 6 horas
-                if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
-                    print("♻ Reinicio preventivo del navegador")
+        async def loop(self, app: Application):
+            while True:
+                try:
+                    # Reinicio preventivo cada 6 horas
+                    if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
+                        print("♻ Reinicio preventivo del navegador")
+                        await self.iniciar()
+
+                    datos = await self.obtener_datos()
+
+                    for nombre, caudal in datos.items():
+                        anterior = self.ultimos.get(nombre)
+                        self.ultimos[nombre] = caudal
+                        await self.procesar_alertas(app, nombre, caudal, anterior)
+
+                    await self.reporte_horario(app)
+
+                except Exception as e:
+                    print("❌ Error en scraping:", e)
                     await self.iniciar()
 
-                datos = await self.obtener_datos()
-
-                for nombre, caudal in datos.items():
-                    anterior = self.ultimos.get(nombre)
-                    self.ultimos[nombre] = caudal
-                    await self.procesar_alertas(app, nombre, caudal, anterior)
-
-                await self.reporte_horario(app)
-
-            except Exception as e:
-                print("❌ Error en scraping:", e)
-                await self.iniciar()
-
-            await asyncio.sleep(CHECK_INTERVAL)
-
+                await asyncio.sleep(CHECK_INTERVAL)
 
 # ==========================
 # FLASK
