@@ -3,6 +3,7 @@ import re
 import asyncio
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask
 from playwright.async_api import async_playwright
 from telegram import Update
@@ -30,7 +31,7 @@ RESTART_BROWSER_INTERVAL = 21600  # 6 horas
 # ==========================
 
 def ahora():
-    return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    return datetime.now(ZoneInfo("America/Santiago")).strftime("%d/%m/%Y %H:%M:%S")
 
 
 def estado_caudal(valor):
@@ -157,26 +158,48 @@ class Monitor:
                 )
                 await self.enviar(app, mensaje)
 
-    async def reporte_horario(self, app):
-        if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
-            return
+async def reporte_horario(self, app):
+    if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
+        return
 
-        detenidos = sum(1 for v in self.ultimos.values() if v == 0)
-        criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
-        bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
-        normales = sum(1 for v in self.ultimos.values() if v >= 30)
+    if not self.ultimos:
+        return
 
-        mensaje = (
-            f"<b>📊 REPORTE HORARIO</b>\n\n"
-            f"🔴 Detenidos: {detenidos}\n"
-            f"🔴 Críticos: {criticos}\n"
-            f"🟠 Bajos: {bajos}\n"
-            f"🟢 Normales: {normales}\n\n"
-            f"<b>📅 {ahora()}</b>"
-        )
+    detenidos = sum(1 for v in self.ultimos.values() if v == 0)
+    criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
+    bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
+    normales = sum(1 for v in self.ultimos.values() if v >= 30)
 
-        await self.enviar(app, mensaje)
-        self.ultimo_reporte = time.time()
+    # 🔹 Ordenar pozos alfabéticamente
+    pozos_ordenados = sorted(self.ultimos.items())
+
+    detalle_pozos = ""
+    for nombre, caudal in pozos_ordenados:
+
+        if caudal == 0:
+            estado = "🔴"
+        elif 0 < caudal < 10:
+            estado = "🔴"
+        elif 10 <= caudal < 30:
+            estado = "🟠"
+        else:
+            estado = "🟢"
+
+        detalle_pozos += f"{estado} <b>{nombre}</b>: {caudal} L/s\n"
+
+    mensaje = (
+        f"<b>📊 REPORTE HORARIO</b>\n\n"
+        f"🔴 Detenidos: {detenidos}\n"
+        f"🔴 Críticos: {criticos}\n"
+        f"🟠 Bajos: {bajos}\n"
+        f"🟢 Normales: {normales}\n\n"
+        f"<b>📍 DETALLE POR POZO</b>\n"
+        f"{detalle_pozos}\n"
+        f"<b>📅 {ahora()}</b>"
+    )
+
+    await self.enviar(app, mensaje)
+    self.ultimo_reporte = time.time()
 
     async def loop(self, app: Application):
         while True:
