@@ -25,7 +25,6 @@ CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 21600  # 6 horas
 
-
 # ==========================
 # UTILIDADES
 # ==========================
@@ -42,7 +41,6 @@ def estado_caudal(valor):
     if valor < 30:
         return "BAJO", "🟠"
     return "NORMAL", "🟢"
-
 
 # ==========================
 # MONITOR
@@ -62,6 +60,7 @@ class Monitor:
         self.inicio_browser = 0
 
     async def iniciar(self):
+
         if self.browser:
             await self.browser.close()
 
@@ -81,6 +80,7 @@ class Monitor:
 
         await self.login()
         self.inicio_browser = time.time()
+
         print("🟢 Navegador iniciado correctamente")
 
     async def login(self):
@@ -94,10 +94,10 @@ class Monitor:
         await self.page.wait_for_timeout(5000)
 
     async def obtener_datos(self):
+
         await self.page.goto(PANEL_URL, timeout=60000)
         await self.page.wait_for_timeout(5000)
 
-        # Si volvió al login, reloguear
         if "login" in self.page.url.lower():
             print("⚠ Sesión expirada. Reintentando login...")
             await self.login()
@@ -130,6 +130,7 @@ class Monitor:
                 print("Error Telegram:", e)
 
     async def procesar_alertas(self, app, nombre, caudal, anterior):
+
         estado, emoji = estado_caudal(caudal)
         ahora_ts = time.time()
 
@@ -159,6 +160,7 @@ class Monitor:
                 await self.enviar(app, mensaje)
 
     async def reporte_horario(self, app):
+
         if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
             return
 
@@ -170,22 +172,10 @@ class Monitor:
         bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
         normales = sum(1 for v in self.ultimos.values() if v >= 30)
 
-        # 🔹 Ordenar pozos alfabéticamente
-        pozos_ordenados = sorted(self.ultimos.items())
-
-        detalle_pozos = ""
-        for nombre, caudal in pozos_ordenados:
-
-            if caudal == 0:
-                estado = "🔴"
-            elif 0 < caudal < 10:
-                estado = "🔴"
-            elif 10 <= caudal < 30:
-                estado = "🟠"
-            else:
-                estado = "🟢"
-
-            detalle_pozos += f"{estado} <b>{nombre}</b>: {caudal} L/s\n"
+        detalle = ""
+        for nombre, caudal in sorted(self.ultimos.items()):
+            _, emoji = estado_caudal(caudal)
+            detalle += f"{emoji} <b>{nombre}</b>: {caudal} L/s\n"
 
         mensaje = (
             f"<b>📊 REPORTE HORARIO</b>\n\n"
@@ -194,35 +184,36 @@ class Monitor:
             f"🟠 Bajos: {bajos}\n"
             f"🟢 Normales: {normales}\n\n"
             f"<b>📍 DETALLE POR POZO</b>\n"
-            f"{detalle_pozos}\n"
+            f"{detalle}\n"
             f"<b>📅 {ahora()}</b>"
         )
 
         await self.enviar(app, mensaje)
         self.ultimo_reporte = time.time()
 
-        async def loop(self, app: Application):
-            while True:
-                try:
-                    # Reinicio preventivo cada 6 horas
-                    if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
-                        print("♻ Reinicio preventivo del navegador")
-                        await self.iniciar()
+    async def loop(self, app: Application):
 
-                    datos = await self.obtener_datos()
+        while True:
+            try:
 
-                    for nombre, caudal in datos.items():
-                        anterior = self.ultimos.get(nombre)
-                        self.ultimos[nombre] = caudal
-                        await self.procesar_alertas(app, nombre, caudal, anterior)
-
-                    await self.reporte_horario(app)
-
-                except Exception as e:
-                    print("❌ Error en scraping:", e)
+                if time.time() - self.inicio_browser > RESTART_BROWSER_INTERVAL:
+                    print("♻ Reinicio preventivo del navegador")
                     await self.iniciar()
 
-                await asyncio.sleep(CHECK_INTERVAL)
+                datos = await self.obtener_datos()
+
+                for nombre, caudal in datos.items():
+                    anterior = self.ultimos.get(nombre)
+                    self.ultimos[nombre] = caudal
+                    await self.procesar_alertas(app, nombre, caudal, anterior)
+
+                await self.reporte_horario(app)
+
+            except Exception as e:
+                print("❌ Error en scraping:", e)
+                await self.iniciar()
+
+            await asyncio.sleep(CHECK_INTERVAL)
 
 # ==========================
 # FLASK
@@ -238,12 +229,12 @@ def home():
 def health():
     return "OK", 200
 
-
 # ==========================
 # TELEGRAM COMMAND
 # ==========================
 
 async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     monitor: Monitor = context.application.bot_data["monitor"]
 
     if not monitor.ultimos:
@@ -252,14 +243,13 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mensaje = "<b>📊 ESTADO ACTUAL</b>\n\n"
 
-    for nombre, valor in monitor.ultimos.items():
+    for nombre, valor in sorted(monitor.ultimos.items()):
         estado, emoji = estado_caudal(valor)
         mensaje += f"<b>{nombre}:</b> {valor} L/s - {emoji} {estado}\n"
 
     mensaje += f"\n🕐 {ahora()}"
 
     await update.message.reply_text(mensaje, parse_mode="HTML")
-
 
 # ==========================
 # MAIN
@@ -275,20 +265,15 @@ async def main():
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
 
-    # Iniciar monitor en background
     asyncio.create_task(monitor.loop(app))
 
-    print("🚀 Bot iniciado correctamente en Render Starter")
-
-    # Inicialización manual correcta
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
 
-    # Mantener vivo el proceso
+    print("🚀 Bot iniciado correctamente en Render Starter")
+
     await asyncio.Event().wait()
 
-
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
