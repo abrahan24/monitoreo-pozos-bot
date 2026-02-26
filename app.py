@@ -4,264 +4,245 @@ import asyncio
 import time
 from datetime import datetime
 from flask import Flask
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException
-from telegram.ext import Application, CommandHandler
-from telegram import Bot
+from playwright.async_api import async_playwright
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# =============================
-# CONFIG
-# =============================
-USERNAME = os.getenv("LEM_USERNAME", "8.496.887-0")
-PASSWORD = os.getenv("LEM_PASSWORD", "8496887")
-TOKEN = os.getenv("TELEGRAM_TOKEN", "TU_TOKEN")
-CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "123456").split(",") if c.strip()]
+# ==========================
+# CONFIGURACIÓN
+# ==========================
+
+USERNAME = os.getenv("LEM_USERNAME")
+PASSWORD = os.getenv("LEM_PASSWORD")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
-# =============================
+CHECK_INTERVAL = 120  # segundos
+REPORTE_INTERVAL = 3600  # 1 hora
+
+
+# ==========================
 # UTILIDADES
-# =============================
+# ==========================
+
 def ahora():
     return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-def estado_caudal(c):
-    if c == 0:
+
+def estado_caudal(valor):
+    if valor == 0:
         return "DETENIDO", "🔴"
-    if c < 10:
+    if valor < 10:
         return "CRÍTICO", "🔴"
-    if c < 30:
+    if valor < 30:
         return "BAJO", "🟠"
     return "NORMAL", "🟢"
 
-# =============================
-# MONITOR
-# =============================
+
+# ==========================
+# MONITOR PLAYWRIGHT
+# ==========================
+
 class Monitor:
 
     def __init__(self):
-        self.driver = None
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+
         self.ultimos = {}
         self.alertas = {}
         self.ultimo_reporte = 0
-        self.bot = Bot(TOKEN)
 
-    # -------------------------
-    # DRIVER
-    # -------------------------
-    def _crear_driver(self):
-        options = Options()
-        for arg in [
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--window-size=1920,1080",
-            "--page-load-strategy=eager"
-        ]:
-            options.add_argument(arg)
+    async def iniciar(self):
+        self.playwright = await async_playwright().start()
 
-        options.binary_location = "/usr/bin/google-chrome"
-        service = Service("/usr/local/bin/chromedriver")
+        self.browser = await self.playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
 
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(60)
-        driver.set_script_timeout(60)
-        return driver
+        self.context = await self.browser.new_context()
+        self.page = await self.context.new_page()
 
-    async def crear_driver(self):
-        self.driver = await asyncio.to_thread(self._crear_driver)
-
-    # -------------------------
-    # LOGIN
-    # -------------------------
-    def _login(self):
-        self.driver.get(LOGIN_URL)
-        time.sleep(3)
-        self.driver.find_element(By.XPATH, "//input[@placeholder='Usuario']").send_keys(USERNAME)
-        self.driver.find_element(By.XPATH, "//input[@placeholder='Contraseña']").send_keys(PASSWORD)
-        self.driver.find_element(By.ID, "loading").click()
-        time.sleep(5)
+        await self.login()
 
     async def login(self):
-        await asyncio.to_thread(self._login)
-        await self.enviar(f"🤖 Bot iniciado\n📅 {ahora()}")
+        print("🔐 Iniciando sesión...")
+        await self.page.goto(LOGIN_URL, timeout=60000)
 
-    # -------------------------
-    # TELEGRAM
-    # -------------------------
-    async def enviar(self, texto):
+        await self.page.fill("input[placeholder='Usuario']", USERNAME)
+        await self.page.fill("input[placeholder='Contraseña']", PASSWORD)
+        await self.page.click("#loading")
+
+        await self.page.wait_for_timeout(5000)
+        print("✅ Login realizado")
+
+    async def obtener_datos(self):
+        await self.page.goto(PANEL_URL, timeout=60000)
+        await self.page.wait_for_timeout(5000)
+
+        elementos = await self.page.query_selector_all("#insidethepopup_alerta .col-lg-2")
+
+        datos = {}
+
+        for el in elementos:
+            texto = await el.inner_text()
+            nombre = texto.split("\n")[0]
+            match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
+
+            if match:
+                datos[nombre] = float(match.group(1))
+
+        return datos
+
+    async def enviar(self, app: Application, mensaje: str):
         for chat in CHATS:
             try:
-                await self.bot.send_message(chat_id=chat, text=texto, parse_mode="HTML")
+                await app.bot.send_message(
+                    chat_id=chat,
+                    text=mensaje,
+                    parse_mode="HTML"
+                )
             except Exception as e:
-                print(f"Error Telegram {chat}: {e}")
+                print("Error Telegram:", e)
 
-    # -------------------------
-    # PROCESAR ALERTAS
-    # -------------------------
-    async def procesar_alerta(self, nombre, caudal, anterior):
+    async def procesar_alertas(self, app, nombre, caudal, anterior):
         estado, emoji = estado_caudal(caudal)
         ahora_ts = time.time()
 
-        # alertas repetidas
         if estado in ["DETENIDO", "CRÍTICO"]:
-            ultima = self.alertas.get(nombre, 0)
-            if ahora_ts - ultima >= 120:
-                await self.enviar(
+            ultima_alerta = self.alertas.get(nombre, 0)
+
+            if ahora_ts - ultima_alerta >= 120:
+                mensaje = (
                     f"<b>{emoji} {estado}</b>\n\n"
                     f"<b>Pozo:</b> {nombre}\n"
                     f"<b>Caudal:</b> {caudal} L/s\n"
                     f"<b>📅 {ahora()}</b>"
                 )
+                await self.enviar(app, mensaje)
                 self.alertas[nombre] = ahora_ts
 
-        # cambio de estado
         elif anterior is not None:
             estado_ant, _ = estado_caudal(anterior)
             if estado != estado_ant:
-                await self.enviar(
+                mensaje = (
                     f"<b>{emoji} CAMBIO DE ESTADO</b>\n\n"
                     f"<b>Pozo:</b> {nombre}\n"
                     f"<b>Nuevo estado:</b> {estado}\n"
                     f"<b>Caudal:</b> {caudal} L/s\n"
                     f"<b>📅 {ahora()}</b>"
                 )
+                await self.enviar(app, mensaje)
 
-    # -------------------------
-    # SCRAPING
-    # -------------------------
-    def _obtener_datos(self):
-        self.driver.get(PANEL_URL)
-        time.sleep(5)
-
-        contenedor = self.driver.find_element(By.ID, "insidethepopup_alerta")
-        pozos = contenedor.find_elements(By.CLASS_NAME, "col-lg-2")
-
-        resultados = {}
-
-        for pozo in pozos:
-            texto = pozo.text
-            nombre = texto.split("\n")[0]
-            match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
-            if match:
-                resultados[nombre] = float(match.group(1))
-
-        return resultados
-
-    async def verificar(self):
-        try:
-            datos = await asyncio.to_thread(self._obtener_datos)
-
-            for nombre, caudal in datos.items():
-                anterior = self.ultimos.get(nombre)
-                self.ultimos[nombre] = caudal
-                await self.procesar_alerta(nombre, caudal, anterior)
-
-            await self.reporte_horario()
-
-        except TimeoutException:
-            print("Timeout, reiniciando driver...")
-            await self.crear_driver()
-            await self.login()
-
-    # -------------------------
-    # REPORTE
-    # -------------------------
-    async def reporte_horario(self):
-        if time.time() - self.ultimo_reporte < 3600:
+    async def reporte_horario(self, app):
+        if time.time() - self.ultimo_reporte < REPORTE_INTERVAL:
             return
 
-        det = sum(1 for c in self.ultimos.values() if c == 0)
-        cri = sum(1 for c in self.ultimos.values() if 0 < c < 10)
-        baj = sum(1 for c in self.ultimos.values() if 10 <= c < 30)
-        nor = sum(1 for c in self.ultimos.values() if c >= 30)
+        detenidos = sum(1 for v in self.ultimos.values() if v == 0)
+        criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
+        bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
+        normales = sum(1 for v in self.ultimos.values() if v >= 30)
 
-        msg = (
+        mensaje = (
             f"<b>📊 REPORTE HORARIO</b>\n\n"
-            f"🔴 Detenidos: {det}\n"
-            f"🔴 Críticos: {cri}\n"
-            f"🟠 Bajos: {baj}\n"
-            f"🟢 Normales: {nor}\n\n"
+            f"🔴 Detenidos: {detenidos}\n"
+            f"🔴 Críticos: {criticos}\n"
+            f"🟠 Bajos: {bajos}\n"
+            f"🟢 Normales: {normales}\n\n"
             f"<b>📅 {ahora()}</b>"
         )
 
-        await self.enviar(msg)
+        await self.enviar(app, mensaje)
         self.ultimo_reporte = time.time()
 
-    # -------------------------
-    # LOOP PRINCIPAL
-    # -------------------------
-    async def loop(self):
-        await self.crear_driver()
-        await self.login()
-
+    async def loop(self, app: Application):
         while True:
-            await self.verificar()
-            await asyncio.sleep(120)
+            try:
+                datos = await self.obtener_datos()
+
+                for nombre, caudal in datos.items():
+                    anterior = self.ultimos.get(nombre)
+                    self.ultimos[nombre] = caudal
+                    await self.procesar_alertas(app, nombre, caudal, anterior)
+
+                await self.reporte_horario(app)
+
+            except Exception as e:
+                print("Error scraping:", e)
+                await self.login()
+
+            await asyncio.sleep(CHECK_INTERVAL)
 
 
-# =============================
-# TELEGRAM COMMANDS
-# =============================
-async def cmd_caudales(update, context):
-    monitor: Monitor = context.bot_data["monitor"]
+# ==========================
+# FLASK (RENDER KEEP ALIVE)
+# ==========================
 
-    if not monitor.ultimos:
-        await update.message.reply_text("🔄 Cargando datos...")
-        return
+flask_app = Flask(__name__)
 
-    msg = "<b>📊 ESTADO ACTUAL</b>\n\n"
-    for n, c in monitor.ultimos.items():
-        estado, emoji = estado_caudal(c)
-        msg += f"<b>{n}:</b> {c} L/s - {emoji} {estado}\n"
-
-    msg += f"\n🕐 {ahora()}"
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-
-# =============================
-# FLASK HEALTH
-# =============================
-app = Flask(__name__)
-
-@app.route("/")
+@flask_app.route("/")
 def home():
     return "Bot activo"
 
-@app.route("/health")
+@flask_app.route("/health")
 def health():
     return "OK", 200
 
 
-# =============================
-# MAIN ASYNC
-# =============================
+# ==========================
+# COMANDO TELEGRAM
+# ==========================
+
+async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    monitor: Monitor = context.application.bot_data["monitor"]
+
+    if not monitor.ultimos:
+        await update.message.reply_text("🔄 Aún no hay datos disponibles...")
+        return
+
+    mensaje = "<b>📊 ESTADO ACTUAL</b>\n\n"
+
+    for nombre, valor in monitor.ultimos.items():
+        estado, emoji = estado_caudal(valor)
+        mensaje += f"<b>{nombre}:</b> {valor} L/s - {emoji} {estado}\n"
+
+    mensaje += f"\n🕐 {ahora()}"
+
+    await update.message.reply_text(mensaje, parse_mode="HTML")
+
+
+# ==========================
+# MAIN
+# ==========================
+
 async def main():
+
     monitor = Monitor()
+    await monitor.iniciar()
 
-    telegram_app = Application.builder().token(TOKEN).build()
-    telegram_app.bot_data["monitor"] = monitor
+    app = Application.builder().token(TOKEN).build()
+    app.bot_data["monitor"] = monitor
 
-    telegram_app.add_handler(CommandHandler("caudales", cmd_caudales))
+    app.add_handler(CommandHandler("caudales", cmd_caudales))
 
-    # iniciar monitor en background
-    asyncio.create_task(monitor.loop())
+    asyncio.create_task(monitor.loop(app))
 
-    # iniciar telegram
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.updater.start_polling()
-
-    # iniciar flask en thread
+    port = int(os.getenv("PORT", 5000))
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, lambda: app.run(host="0.0.0.0", port=5000, use_reloader=False))
 
-    await telegram_app.updater.idle()
+    loop.run_in_executor(
+        None,
+        lambda: flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+    )
+
+    print("🚀 Bot iniciado correctamente")
+    await app.run_polling()
 
 
 if __name__ == "__main__":
