@@ -6,13 +6,13 @@ import traceback
 import sys
 import asyncio
 from datetime import datetime
-from flask import Flask
+from flask import Flask, request
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, WebDriverException
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler
 import requests
 
@@ -29,8 +29,6 @@ CHATS = [c.strip() for c in os.environ.get("CHAT_IDS", "5921135865").split(",") 
 
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
-
-bot = Bot(token=TOKEN)
 
 # ==============================
 # ESTADO
@@ -71,7 +69,7 @@ def crear_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--page-load-strategy=eager")  # No esperar recursos secundarios
+    options.add_argument("--page-load-strategy=eager")
     options.add_argument("--disable-web-security")
     options.add_argument("--disable-features=VizDisplayCompositor")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -80,7 +78,7 @@ def crear_driver():
     try:
         service = Service('/usr/local/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(60)  # Timeout de 60 segundos
+        driver.set_page_load_timeout(60)
         driver.set_script_timeout(60)
         print("✅ Chrome driver creado exitosamente")
         return driver
@@ -173,7 +171,7 @@ async def cmd_caudales(update, context):
         print(f"❌ Error enviando caudales: {e}")
 
 # ==============================
-# FUNCIONES LEM (MEJORADAS)
+# FUNCIONES LEM
 # ==============================
 def login():
     """Inicia sesión con reintentos"""
@@ -384,7 +382,7 @@ def hilo_monitoreo():
             
             print("🔄 Monitoreando cada 2 minutos...")
             sys.stdout.flush()
-            reintentos = 0  # Resetear contador de reintentos
+            reintentos = 0
             
             while True:
                 try:
@@ -396,7 +394,7 @@ def hilo_monitoreo():
                     print(f"❌ Error en ciclo de verificación: {e}")
                     sys.stdout.flush()
                     time.sleep(30)
-                    break  # Salir para reiniciar driver
+                    break
                     
         except Exception as e:
             reintentos += 1
@@ -404,7 +402,7 @@ def hilo_monitoreo():
             sys.stdout.flush()
             traceback.print_exc()
             
-            tiempo_espera = min(300, 60 * reintentos)  # Espera progresiva
+            tiempo_espera = min(300, 60 * reintentos)
             print(f"⏱️ Reintentando en {tiempo_espera} segundos...")
             time.sleep(tiempo_espera)
             
@@ -416,7 +414,38 @@ def hilo_monitoreo():
                 driver = None
 
 # ==============================
-# FLASK
+# APLICACIÓN TELEGRAM CON WEBHOOKS
+# ==============================
+telegram_app = None
+
+async def setup_webhook():
+    """Configura el webhook para el bot de Telegram"""
+    global telegram_app
+    
+    telegram_app = Application.builder().token(TOKEN).build()
+    telegram_app.add_handler(CommandHandler("start", cmd_start))
+    telegram_app.add_handler(CommandHandler("ayuda", cmd_ayuda))
+    telegram_app.add_handler(CommandHandler("caudales", cmd_caudales))
+    
+    await telegram_app.initialize()
+    
+    # Obtener URL pública de Render
+    public_url = os.environ.get('RENDER_EXTERNAL_URL', None)
+    if not public_url:
+        # En desarrollo local, usar ngrok o similar
+        public_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}"
+    
+    webhook_url = f"{public_url}/webhook"
+    
+    # Configurar webhook
+    await telegram_app.bot.set_webhook(url=webhook_url, allowed_updates=['message'])
+    print(f"✅ Webhook configurado en {webhook_url}")
+    sys.stdout.flush()
+    
+    return telegram_app
+
+# ==============================
+# FLASK (MANEJA WEBHOOK Y HEALTH CHECK)
 # ==============================
 app = Flask(__name__)
 
@@ -433,6 +462,7 @@ def home():
             <p><b>Driver Chrome:</b> {estado_driver}</p>
             <p><b>Pozos monitoreados:</b> {len(ultimos_caudales)}</p>
             <p><b>Chats autorizados:</b> {len(CHATS)}</p>
+            <p><b>Modo:</b> Webhook</p>
             <p><a href="/health">Health Check</a></p>
         </body>
     </html>
@@ -444,6 +474,21 @@ def health():
         return "OK", 200
     else:
         return "Driver no disponible", 503
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Endpoint para recibir actualizaciones de Telegram"""
+    if telegram_app is None:
+        return "Bot no inicializado", 503
+    
+    # Procesar la actualización
+    update_data = request.get_json()
+    update = Update.de_json(update_data, telegram_app.bot)
+    
+    # Procesar en un hilo para no bloquear
+    threading.Thread(target=lambda: asyncio.run(telegram_app.process_update(update)), daemon=True).start()
+    
+    return "OK", 200
 
 # ==============================
 # INICIO
@@ -463,26 +508,14 @@ if __name__ == "__main__":
     print("✅ Hilo de monitoreo iniciado")
     sys.stdout.flush()
     
-    # Iniciar Flask en un hilo separado
+    # Configurar webhook de Telegram
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_webhook())
+    
+    # Iniciar Flask (esto bloquea el hilo principal)
     port = int(os.environ.get('PORT', 5000))
-    flask_thread = threading.Thread(
-        target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
-        daemon=True
-    )
-    flask_thread.start()
     print(f"✅ Flask iniciado en puerto {port}")
     sys.stdout.flush()
     
-    # Iniciar bot de Telegram en el hilo principal
-    print("🤖 Iniciando bot de Telegram...")
-    sys.stdout.flush()
-    
-    telegram_app = Application.builder().token(TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", cmd_start))
-    telegram_app.add_handler(CommandHandler("ayuda", cmd_ayuda))
-    telegram_app.add_handler(CommandHandler("caudales", cmd_caudales))
-    
-    # Ejecutar bot (bloquea el hilo principal)
-    print("✅ Bot de Telegram escuchando comandos")
-    sys.stdout.flush()
-    telegram_app.run_polling(drop_pending_updates=True)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
