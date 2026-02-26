@@ -255,16 +255,9 @@ async def main():
 
     asyncio.create_task(monitor.loop(app))
 
-    port = int(os.getenv("PORT", 5000))
-    loop = asyncio.get_running_loop()
+    print("🚀 Bot iniciado correctamente en Render Starter")
 
-    loop.run_in_executor(
-        None,
-        lambda: flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
-    )
-
-    print("🚀 Bot iniciado en Render Starter")
-    await app.run_polling()
+    await app.run_polling(close_loop=False)
 
 
 if __name__ == "__main__":
