@@ -21,7 +21,7 @@ CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
-CHECK_INTERVAL = 120
+CHECK_INTERVAL = 180
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 21600  # 6 horas
 CHILE_TZ = ZoneInfo("America/Santiago")
@@ -62,6 +62,9 @@ class Monitor:
         self.alertas = {}
         self.ultimo_reporte = None
         self.inicio_browser = None
+        
+        self.fallos_consecutivos = 0
+        self.max_fallos = 3
 
     async def iniciar(self):
 
@@ -102,16 +105,29 @@ class Monitor:
 
     async def obtener_datos(self):
 
-        await self.page.goto(PANEL_URL, timeout=60000)
-        await self.page.wait_for_timeout(5000)
+        try:
+            await self.page.goto(PANEL_URL, timeout=30000)
+            await self.page.wait_for_selector(
+                "#insidethepopup_alerta",
+                timeout=30000
+            )
 
-        if "login" in self.page.url.lower():
-            print("⚠ Sesión expirada. Reintentando login...")
-            await self.login()
-            await self.page.goto(PANEL_URL, timeout=60000)
-            await self.page.wait_for_timeout(5000)
+        except Exception:
+            # Posible sesión expirada o web lenta
+            if "login" in self.page.url.lower():
+                print("⚠ Sesión expirada. Reintentando login...")
+                await self.login()
+                await self.page.goto(PANEL_URL, timeout=30000)
+                await self.page.wait_for_selector(
+                    "#insidethepopup_alerta",
+                    timeout=30000
+                )
+            else:
+                raise  # Propaga error real
 
-        elementos = await self.page.query_selector_all("#insidethepopup_alerta .col-lg-2")
+        elementos = await self.page.query_selector_all(
+            "#insidethepopup_alerta .col-lg-2"
+        )
 
         datos = {}
 
@@ -205,13 +221,14 @@ class Monitor:
 
         while True:
             try:
-
+                # Reinicio preventivo cada X horas
                 if self.inicio_browser and \
-                    (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
+                (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
                     print("♻ Reinicio preventivo del navegador")
                     await self.iniciar()
 
                 datos = await self.obtener_datos()
+                self.fallos_consecutivos = 0  # éxito → reset
 
                 for nombre, caudal in datos.items():
                     anterior = self.ultimos.get(nombre)
@@ -221,8 +238,16 @@ class Monitor:
                 await self.reporte_horario(app)
 
             except Exception as e:
-                print("❌ Error en scraping:", e)
-                await self.iniciar()
+                self.fallos_consecutivos += 1
+                print(f"❌ Error en scraping ({self.fallos_consecutivos}):", e)
+
+                if self.fallos_consecutivos >= self.max_fallos:
+                    print("⚠ Demasiados fallos. Pausando 5 minutos y reiniciando navegador.")
+                    await asyncio.sleep(300)
+                    self.fallos_consecutivos = 0
+                    await self.iniciar()
+                else:
+                    await asyncio.sleep(30)  # backoff suave
 
             await asyncio.sleep(CHECK_INTERVAL)
 
