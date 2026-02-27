@@ -23,7 +23,7 @@ PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
 CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
-RESTART_BROWSER_INTERVAL = 21600  # 6 horas
+RESTART_BROWSER_INTERVAL = 86400  # 24 horas
 CHILE_TZ = ZoneInfo("America/Santiago")
 
 # ==========================
@@ -209,10 +209,23 @@ class Monitor:
         while True:
             try:
 
+                # Verificar si toca reinicio preventivo
                 if self.inicio_browser and \
-                    (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
-                    print("♻ Reinicio preventivo del navegador")
+                (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
+
+                    print("♻ Reinicio preventivo programado")
+
+                    # Esperar antes de reiniciar
+                    await asyncio.sleep(2)
+
+                    await self.context.close()
+                    await self.browser.close()
+
                     await self.iniciar()
+
+                    # Saltar esta iteración
+                    await asyncio.sleep(CHECK_INTERVAL)
+                    continue
 
                 datos = await self.obtener_datos()
 
@@ -225,7 +238,16 @@ class Monitor:
 
             except Exception as e:
                 print("❌ Error en scraping:", e)
-                await self.iniciar()
+
+                self.fallos_consecutivos += 1
+
+                if self.fallos_consecutivos >= self.max_fallos:
+                    print("⚠ Reiniciando navegador por fallos consecutivos...")
+                    await asyncio.sleep(10)
+                    await self.iniciar()
+                    self.fallos_consecutivos = 0
+                else:
+                    await asyncio.sleep(30)
 
             await asyncio.sleep(CHECK_INTERVAL)
 
