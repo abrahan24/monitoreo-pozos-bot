@@ -95,7 +95,7 @@ class Monitor:
 
     async def login(self):
         print("🔐 Iniciando sesión...")
-        await self.page.goto(LOGIN_URL, timeout=30000)
+        await self.page.goto(LOGIN_URL, timeout=60000)
 
         await self.page.fill("input[placeholder='Usuario']", USERNAME)
         await self.page.fill("input[placeholder='Contraseña']", PASSWORD)
@@ -105,29 +105,16 @@ class Monitor:
 
     async def obtener_datos(self):
 
-        try:
-            await self.page.goto(PANEL_URL, timeout=30000)
-            await self.page.wait_for_selector(
-                "#insidethepopup_alerta",
-                timeout=30000
-            )
+        await self.page.goto(PANEL_URL, timeout=60000)
+        await self.page.wait_for_timeout(5000)
 
-        except Exception:
-            # Posible sesión expirada o web lenta
-            if "login" in self.page.url.lower():
-                print("⚠ Sesión expirada. Reintentando login...")
-                await self.login()
-                await self.page.goto(PANEL_URL, timeout=30000)
-                await self.page.wait_for_selector(
-                    "#insidethepopup_alerta",
-                    timeout=30000
-                )
-            else:
-                raise  # Propaga error real
+        if "login" in self.page.url.lower():
+            print("⚠ Sesión expirada. Reintentando login...")
+            await self.login()
+            await self.page.goto(PANEL_URL, timeout=60000)
+            await self.page.wait_for_timeout(5000)
 
-        elementos = await self.page.query_selector_all(
-            "#insidethepopup_alerta .col-lg-2"
-        )
+        elementos = await self.page.query_selector_all("#insidethepopup_alerta .col-lg-2")
 
         datos = {}
 
@@ -221,14 +208,13 @@ class Monitor:
 
         while True:
             try:
-                # Reinicio preventivo cada X horas
+
                 if self.inicio_browser and \
-                (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
+                    (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
                     print("♻ Reinicio preventivo del navegador")
                     await self.iniciar()
 
                 datos = await self.obtener_datos()
-                self.fallos_consecutivos = 0  # éxito → reset
 
                 for nombre, caudal in datos.items():
                     anterior = self.ultimos.get(nombre)
@@ -238,16 +224,8 @@ class Monitor:
                 await self.reporte_horario(app)
 
             except Exception as e:
-                self.fallos_consecutivos += 1
-                print(f"❌ Error en scraping ({self.fallos_consecutivos}):", e)
-
-                if self.fallos_consecutivos >= self.max_fallos:
-                    print("⚠ Demasiados fallos. Pausando 5 minutos y reiniciando navegador.")
-                    await asyncio.sleep(300)
-                    self.fallos_consecutivos = 0
-                    await self.iniciar()
-                else:
-                    await asyncio.sleep(30)  # backoff suave
+                print("❌ Error en scraping:", e)
+                await self.iniciar()
 
             await asyncio.sleep(CHECK_INTERVAL)
 
@@ -291,7 +269,7 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ==========================
 
-async def main():
+def main():
 
     monitor = Monitor()
 
@@ -300,23 +278,15 @@ async def main():
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
 
-    # Handler global de errores (evita crash silencioso)
-    async def error_handler(update, context):
-        print(f"⚠ Error global: {context.error}")
+    async def post_init(app: Application):
+        await monitor.iniciar()
+        asyncio.create_task(monitor.loop(app))
+        print("🚀 Bot iniciado correctamente en Render Starter")
 
-    app.add_error_handler(error_handler)
+    app.post_init = post_init
 
-    # Iniciar navegador antes de polling
-    await monitor.iniciar()
-
-    # Crear tarea segura dentro de Application
-    app.create_task(monitor.loop(app))
-
-    print("🚀 Bot iniciado correctamente en Render Starter")
-
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
