@@ -291,7 +291,7 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ==========================
 
-def main():
+async def main():
 
     monitor = Monitor()
 
@@ -300,15 +300,23 @@ def main():
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
 
-    async def post_init(app: Application):
-        await monitor.iniciar()
-        asyncio.create_task(monitor.loop(app))
-        print("🚀 Bot iniciado correctamente en Render Starter")
+    # Handler global de errores (evita crash silencioso)
+    async def error_handler(update, context):
+        print(f"⚠ Error global: {context.error}")
 
-    app.post_init = post_init
+    app.add_error_handler(error_handler)
 
-    app.run_polling(drop_pending_updates=True)
+    # Iniciar navegador antes de polling
+    await monitor.iniciar()
+
+    # Crear tarea segura dentro de Application
+    app.create_task(monitor.loop(app))
+
+    print("🚀 Bot iniciado correctamente en Render Starter")
+
+    await app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
