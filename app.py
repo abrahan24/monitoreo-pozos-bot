@@ -21,7 +21,7 @@ CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 
-CHECK_INTERVAL = 180
+CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 21600  # 6 horas
 CHILE_TZ = ZoneInfo("America/Santiago")
