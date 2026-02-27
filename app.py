@@ -95,7 +95,7 @@ class Monitor:
 
     async def login(self):
         print("🔐 Iniciando sesión...")
-        await self.page.goto(LOGIN_URL, timeout=60000)
+        await self.page.goto(LOGIN_URL, timeout=30000)
 
         await self.page.fill("input[placeholder='Usuario']", USERNAME)
         await self.page.fill("input[placeholder='Contraseña']", PASSWORD)
