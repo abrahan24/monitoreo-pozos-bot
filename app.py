@@ -65,7 +65,7 @@ ETAPAS_UVA_KC = [
 FACTOR_LAVADO = 0.10
 LLUVIA_EFECTIVA_MM = 0.0
 
-RIEGO_SECTOR, RIEGO_KC = range(2)
+RIEGO_SECTOR, RIEGO_KC, RIEGO_GENERAL_KC = range(3)
 
 # ==========================
 # UTILIDADES
@@ -197,6 +197,29 @@ def formatear_resultado_riego(data: dict) -> str:
         f"<b>Promedio diario:</b> {hd} h {md:02d} min\n\n"
         f"🕐 {ahora()}"
     )
+
+def formatear_resultado_riego_general(resultados: list[dict]) -> str:
+    lineas = ["<b>💧 RIEGO GENERAL SEMANAL</b>", ""]
+
+    if resultados:
+        lineas.append(f"<b>ETo acumulada 7 días:</b> {resultados[0]['eto_semana']} mm")
+        lineas.append(f"<b>Kc aplicado:</b> {resultados[0]['kc']}")
+        lineas.append("")
+
+    for data in resultados:
+        hs, ms = horas_a_hm(data["horas_semana"])
+        hd, md = horas_a_hm(data["horas_dia"])
+
+        lineas.append(
+            f"<b>Sector {data['sector']}</b>\n"
+            f"• Precipitación: {data['mm_h']} mm/h\n"
+            f"• ETc semanal: {data['etc_semana']} mm\n"
+            f"• Riego semanal: <b>{hs} h {ms:02d} min</b>\n"
+            f"• Promedio diario: {hd} h {md:02d} min\n"
+        )
+
+    lineas.append(f"🕐 {ahora()}")
+    return "\n".join(lineas)
 
 def formatear_lista_kc_uva() -> str:
     lineas = ["<b>🍇 Kc referencial para uva</b>", ""]
@@ -609,6 +632,66 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Operación cancelada.")
     return ConversationHandler.END
 
+async def cmd_riego_general_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return ConversationHandler.END
+
+    mensaje = (
+        "💧 Cálculo de riego general semanal\n\n"
+        f"{formatear_lista_kc_uva()}\n\n"
+        "Ingresa el valor de Kc para calcular todos los sectores.\n"
+        "Ejemplo: 0.90\n\n"
+        "Para salir usa /cancelar"
+    )
+
+    await update.message.reply_text(mensaje, parse_mode="HTML")
+    return RIEGO_GENERAL_KC
+
+
+async def cmd_riego_general_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return ConversationHandler.END
+
+    texto_kc = update.message.text.strip().replace(",", ".")
+
+    try:
+        kc = float(texto_kc)
+    except ValueError:
+        await update.message.reply_text(
+            "⚠ Kc no válido. Ingresa un número.\nEjemplo: 0.9"
+        )
+        return RIEGO_GENERAL_KC
+
+    if kc <= 0 or kc > 2:
+        await update.message.reply_text(
+            "⚠ El Kc parece fuera de rango.\nIngresa un valor razonable, por ejemplo 0.9"
+        )
+        return RIEGO_GENERAL_KC
+
+    try:
+        etos = obtener_eto_agroclima()
+        resultados = []
+
+        for sector in SECTORES_RIEGO.keys():
+            resultado = calcular_riego_sector(
+                etos=etos,
+                sector=sector,
+                kc=kc,
+                lluvia_efectiva_mm=LLUVIA_EFECTIVA_MM,
+                factor_lavado=FACTOR_LAVADO
+            )
+            resultados.append(resultado)
+
+        mensaje = formatear_resultado_riego_general(resultados)
+        await update.message.reply_text(mensaje, parse_mode="HTML")
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error al calcular riego general:\n{str(e)}"
+        )
+
+    return ConversationHandler.END
+
 # ==========================
 # MAIN
 # ==========================
@@ -640,7 +723,18 @@ def main():
         fallbacks=[CommandHandler("cancelar", cmd_cancelar)],
     )
 
+    riego_general_handler = ConversationHandler(
+        entry_points=[CommandHandler("riego_general", cmd_riego_general_inicio)],
+        states={
+            RIEGO_GENERAL_KC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_riego_general_kc)
+            ],
+        },
+        fallbacks=[CommandHandler("cancelar", cmd_cancelar)],
+    )
+
     app.add_handler(riego_handler)
+    app.add_handler(riego_general_handler)
 
     async def post_init(application: Application):
         await monitor.iniciar()
