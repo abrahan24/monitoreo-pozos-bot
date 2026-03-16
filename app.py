@@ -16,6 +16,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 # ==========================
 # CONFIGURACIÓN
@@ -696,13 +697,29 @@ async def cmd_riego_general_kc(update: Update, context: ContextTypes.DEFAULT_TYP
 # MAIN
 # ==========================
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("⚠ Error global de Telegram:", context.error)
+
 def main():
     if not TOKEN:
         raise ValueError("Falta la variable de entorno TELEGRAM_TOKEN.")
 
     monitor = Monitor()
 
-    app = Application.builder().token(TOKEN).build()
+    request = HTTPXRequest(
+    connect_timeout=30.0,
+    read_timeout=60.0,
+    write_timeout=30.0,
+    pool_timeout=30.0,
+    )
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .request(request)
+        .get_updates_request(request)
+        .build()
+    )
     app.bot_data["monitor"] = monitor
 
     app.add_handler(CommandHandler("caudales", cmd_caudales))
@@ -735,6 +752,7 @@ def main():
 
     app.add_handler(riego_handler)
     app.add_handler(riego_general_handler)
+    app.add_error_handler(error_handler)
 
     async def post_init(application: Application):
         await monitor.iniciar()
@@ -742,8 +760,15 @@ def main():
         print("🚀 Bot iniciado correctamente en Railway")
 
     app.post_init = post_init
-    app.run_polling(drop_pending_updates=True)
-
+    
+    app.run_polling(
+        drop_pending_updates=True,
+        timeout=30,
+        read_timeout=60,
+        write_timeout=30,
+        connect_timeout=30,
+        pool_timeout=30,
+    )
 
 if __name__ == "__main__":
     main()
