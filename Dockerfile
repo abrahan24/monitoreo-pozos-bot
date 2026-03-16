@@ -1,10 +1,8 @@
 FROM python:3.11-slim
 
-# Evita buffering y mejora logs en Render
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Instalar dependencias necesarias para Chromium
 RUN apt-get update && apt-get install -y \
     wget \
     curl \
@@ -29,18 +27,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copiar primero requirements para aprovechar cache de Docker
 COPY requirements.txt .
 
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
 
-# Instalar solo Chromium (SIN --with-deps)
 RUN playwright install chromium
 
-# Copiar el resto del proyecto
 COPY . .
-
-EXPOSE 5000
 
 CMD ["python", "app.py"]

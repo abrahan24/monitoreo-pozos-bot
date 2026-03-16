@@ -3,7 +3,9 @@ import re
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask, app
+
+import requests
+from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from telegram import Update
 from telegram.ext import (
@@ -14,8 +16,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-import requests
-from bs4 import BeautifulSoup
 
 # ==========================
 # CONFIGURACIÓN
@@ -33,6 +33,7 @@ PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
 CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 86400  # 24 horas
+
 CHILE_TZ = ZoneInfo("America/Santiago")
 AGROCLIMA_URL = "https://www.agroclima.cl/InfoInforme/Evapotranspiracion?codigo=270026"
 
@@ -52,18 +53,20 @@ FACTOR_LAVADO = 0.10
 LLUVIA_EFECTIVA_MM = 0.0
 
 RIEGO_SECTOR, RIEGO_KC = range(2)
+
 # ==========================
 # UTILIDADES
 # ==========================
 
-def ahora():
+def ahora() -> str:
     return datetime.now(CHILE_TZ).strftime("%d/%m/%Y %H:%M:%S")
 
-def ahora_dt():
+
+def ahora_dt() -> datetime:
     return datetime.now(CHILE_TZ)
 
 
-def estado_caudal(valor):
+def estado_caudal(valor: float):
     if valor == 0:
         return "DETENIDO", "🔴"
     if valor < 10:
@@ -72,15 +75,23 @@ def estado_caudal(valor):
         return "BAJO", "🟠"
     return "NORMAL", "🟢"
 
-def extraer_numeros_eto(texto):
+
+def extraer_numeros_eto(texto: str) -> list[float]:
     encontrados = re.findall(r"\d+[.,]\d+", texto)
     return [float(x.replace(",", ".")) for x in encontrados]
 
 
-def obtener_eto_agroclima():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(AGROCLIMA_URL, headers=headers, timeout=30)
-    r.raise_for_status()
+def obtener_eto_agroclima() -> list[float]:
+    """
+    Extrae valores de ETo desde Agroclima.
+    Devuelve idealmente los últimos 7 valores válidos.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(AGROCLIMA_URL, headers=headers, timeout=30)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise ValueError(f"No se pudo conectar a Agroclima: {e}")
 
     soup = BeautifulSoup(r.text, "html.parser")
     texto = soup.get_text("\n", strip=True)
@@ -96,30 +107,40 @@ def obtener_eto_agroclima():
         m = re.search(patron, texto, re.IGNORECASE)
         if m:
             valores = extraer_numeros_eto(m.group(1))
+            valores = [v for v in valores if 0 <= v <= 15]
             if len(valores) >= 7:
-                return valores
+                return valores[-7:]
 
     tablas = soup.find_all("table")
     for tabla in tablas:
         txt = tabla.get_text(" ", strip=True)
         if "Evapotranspir" in txt or "mm/día" in txt or "mm/dia" in txt:
             nums = extraer_numeros_eto(txt)
+            nums = [v for v in nums if 0 <= v <= 15]
             if len(nums) >= 7:
-                return nums
+                return nums[-7:]
 
     raise ValueError("No se pudo extraer la ETo desde Agroclima.")
 
 
-def horas_a_hm(horas_float):
+def horas_a_hm(horas_float: float):
     horas = int(horas_float)
     minutos = int(round((horas_float - horas) * 60))
+
     if minutos == 60:
         horas += 1
         minutos = 0
+
     return horas, minutos
 
 
-def calcular_riego_sector(etos, sector, kc, lluvia_efectiva_mm=0.0, factor_lavado=0.0):
+def calcular_riego_sector(
+    etos: list[float],
+    sector: str,
+    kc: float,
+    lluvia_efectiva_mm: float = 0.0,
+    factor_lavado: float = 0.0
+) -> dict:
     if len(etos) < 7:
         raise ValueError("Se requieren al menos 7 valores de ETo.")
 
@@ -133,7 +154,7 @@ def calcular_riego_sector(etos, sector, kc, lluvia_efectiva_mm=0.0, factor_lavad
     etc_ajustada = max(0.0, etc_semana - lluvia_efectiva_mm)
     etc_ajustada *= (1 + factor_lavado)
 
-    horas_semana = etc_ajustada / mm_h if mm_h > 0 else 0
+    horas_semana = etc_ajustada / mm_h if mm_h > 0 else 0.0
     horas_dia = horas_semana / 7
 
     return {
@@ -148,7 +169,7 @@ def calcular_riego_sector(etos, sector, kc, lluvia_efectiva_mm=0.0, factor_lavad
     }
 
 
-def formatear_resultado_riego(data):
+def formatear_resultado_riego(data: dict) -> str:
     hs, ms = horas_a_hm(data["horas_semana"])
     hd, md = horas_a_hm(data["horas_dia"])
 
@@ -169,7 +190,6 @@ def formatear_resultado_riego(data):
 # ==========================
 
 class Monitor:
-
     def __init__(self):
         self.playwright = None
         self.browser = None
@@ -180,49 +200,71 @@ class Monitor:
         self.alertas = {}
         self.ultimo_reporte = None
         self.inicio_browser = None
-        
+
         self.fallos_consecutivos = 0
         self.max_fallos = 3
+        self.lock_reinicio = asyncio.Lock()
 
-    async def iniciar(self):
-
+    async def cerrar_recursos(self):
         if self.context:
-            await self.context.close()
+            try:
+                await self.context.close()
+            except Exception:
+                pass
+            self.context = None
 
         if self.browser:
-            await self.browser.close()
+            try:
+                await self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
 
-        self.playwright = await async_playwright().start()
+        if self.playwright:
+            try:
+                await self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
 
-        self.browser = await self.playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ]
-        )
+        self.page = None
 
-        self.context = await self.browser.new_context()
-        self.page = await self.context.new_page()
+    async def iniciar(self):
+        async with self.lock_reinicio:
+            await self.cerrar_recursos()
 
-        await self.login()
-        self.inicio_browser = ahora_dt()
+            self.playwright = await async_playwright().start()
 
-        print("🟢 Navegador iniciado correctamente")
+            self.browser = await self.playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
+
+            await self.login()
+            self.inicio_browser = ahora_dt()
+
+            print("🟢 Navegador iniciado correctamente")
 
     async def login(self):
+        if not USERNAME or not PASSWORD:
+            raise ValueError("Faltan variables de entorno LEM_USERNAME o LEM_PASSWORD.")
+
         print("🔐 Iniciando sesión...")
         await self.page.goto(LOGIN_URL, timeout=60000)
 
         await self.page.fill("input[placeholder='Usuario']", USERNAME)
         await self.page.fill("input[placeholder='Contraseña']", PASSWORD)
         await self.page.click("#loading")
-
         await self.page.wait_for_timeout(5000)
 
-    async def obtener_datos(self):
-
+    async def obtener_datos(self) -> dict:
         await self.page.goto(PANEL_URL, timeout=60000)
         await self.page.wait_for_timeout(5000)
 
@@ -233,12 +275,11 @@ class Monitor:
             await self.page.wait_for_timeout(5000)
 
         elementos = await self.page.query_selector_all("#insidethepopup_alerta .col-lg-2")
-
         datos = {}
 
         for el in elementos:
             texto = await el.inner_text()
-            nombre = texto.split("\n")[0]
+            nombre = texto.split("\n")[0].strip()
             match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
 
             if match:
@@ -257,8 +298,7 @@ class Monitor:
             except Exception as e:
                 print("Error Telegram:", e)
 
-    async def procesar_alertas(self, app, nombre, caudal, anterior):
-
+    async def procesar_alertas(self, app: Application, nombre: str, caudal: float, anterior):
         estado, emoji = estado_caudal(caudal)
         ahora_ts = ahora_dt()
 
@@ -287,12 +327,11 @@ class Monitor:
                 )
                 await self.enviar(app, mensaje)
 
-    async def reporte_horario(self, app):
-
+    async def reporte_horario(self, app: Application):
         ahora_actual = ahora_dt()
 
         if self.ultimo_reporte and \
-        (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
+           (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
             return
 
         if not self.ultimos:
@@ -323,25 +362,13 @@ class Monitor:
         self.ultimo_reporte = ahora_actual
 
     async def loop(self, app: Application):
-
         while True:
             try:
-
-                # Verificar si toca reinicio preventivo
                 if self.inicio_browser and \
-                (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
-
+                   (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
                     print("♻ Reinicio preventivo programado")
-
-                    # Esperar antes de reiniciar
                     await asyncio.sleep(2)
-
-                    await self.context.close()
-                    await self.browser.close()
-
                     await self.iniciar()
-
-                    # Saltar esta iteración
                     await asyncio.sleep(CHECK_INTERVAL)
                     continue
 
@@ -357,13 +384,15 @@ class Monitor:
 
             except Exception as e:
                 print("❌ Error en scraping:", e)
-
                 self.fallos_consecutivos += 1
 
                 if self.fallos_consecutivos >= self.max_fallos:
                     print("⚠ Reiniciando navegador por fallos consecutivos...")
                     await asyncio.sleep(10)
-                    await self.iniciar()
+                    try:
+                        await self.iniciar()
+                    except Exception as reinicio_error:
+                        print("❌ Error reiniciando navegador:", reinicio_error)
                     self.fallos_consecutivos = 0
                 else:
                     await asyncio.sleep(30)
@@ -371,24 +400,12 @@ class Monitor:
             await asyncio.sleep(CHECK_INTERVAL)
 
 # ==========================
-# FLASK
-# ==========================
-
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Bot activo"
-
-@flask_app.route("/health")
-def health():
-    return "OK", 200
-
-# ==========================
-# TELEGRAM COMMAND
+# COMANDOS TELEGRAM
 # ==========================
 
 async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
 
     monitor: Monitor = context.application.bot_data["monitor"]
 
@@ -406,7 +423,10 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(mensaje, parse_mode="HTML")
 
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
 
     monitor: Monitor = context.application.bot_data["monitor"]
 
@@ -426,15 +446,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(mensaje, parse_mode="HTML")
 
+
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
 
     if str(update.effective_chat.id) != str(ADMIN_ID):
         await update.message.reply_text("⛔ No autorizado")
         return
 
     monitor: Monitor = context.application.bot_data["monitor"]
-
-    usuario = update.effective_user.full_name
+    usuario = update.effective_user.full_name if update.effective_user else "Desconocido"
     ahora_txt = ahora()
 
     await update.message.reply_text("♻ Reiniciando navegador...")
@@ -449,7 +471,6 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🕐 {ahora_txt}"
         )
 
-        # Confirmación SOLO al admin
         await context.application.bot.send_message(
             chat_id=ADMIN_ID,
             text=mensaje_ok,
@@ -457,7 +478,6 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-
         mensaje_error = (
             f"❌ <b>Error al reiniciar</b>\n\n"
             f"{str(e)}\n"
@@ -470,10 +490,17 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
+
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     await update.message.reply_text(f"Tu chat ID es: {update.effective_chat.id}")
 
+
 async def cmd_riego_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return ConversationHandler.END
+
     sectores_txt = "\n".join(f"• {s}" for s in SECTORES_RIEGO.keys())
 
     await update.message.reply_text(
@@ -487,7 +514,10 @@ async def cmd_riego_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_riego_sector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sector = update.message.text.strip().replace(" ", "")
+    if not update.message:
+        return ConversationHandler.END
+
+    sector = re.sub(r"\s+", "", update.message.text.strip())
 
     if sector not in SECTORES_RIEGO:
         await update.message.reply_text(
@@ -508,6 +538,9 @@ async def cmd_riego_sector(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_riego_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return ConversationHandler.END
+
     texto_kc = update.message.text.strip().replace(",", ".")
 
     try:
@@ -540,15 +573,16 @@ async def cmd_riego_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mensaje, parse_mode="HTML")
 
     except Exception as e:
-        await update.message.reply_text(
-            f"❌ Error al calcular riego:\n{str(e)}"
-        )
+        await update.message.reply_text(f"❌ Error al calcular riego:\n{str(e)}")
 
     context.user_data.pop("sector_riego", None)
     return ConversationHandler.END
 
 
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return ConversationHandler.END
+
     context.user_data.pop("sector_riego", None)
     await update.message.reply_text("❌ Operación cancelada.")
     return ConversationHandler.END
@@ -558,6 +592,8 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================
 
 def main():
+    if not TOKEN:
+        raise ValueError("Falta la variable de entorno TELEGRAM_TOKEN.")
 
     monitor = Monitor()
 
@@ -584,13 +620,12 @@ def main():
 
     app.add_handler(riego_handler)
 
-    async def post_init(app: Application):
+    async def post_init(application: Application):
         await monitor.iniciar()
-        asyncio.create_task(monitor.loop(app))
-        print("🚀 Bot iniciado correctamente en Render Starter")
+        asyncio.create_task(monitor.loop(application))
+        print("🚀 Bot iniciado correctamente en Railway")
 
     app.post_init = post_init
-
     app.run_polling(drop_pending_updates=True)
 
 
