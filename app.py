@@ -3,10 +3,19 @@ import re
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask
+from flask import Flask, app
 from playwright.async_api import async_playwright
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+import requests
+from bs4 import BeautifulSoup
 
 # ==========================
 # CONFIGURACIÓN
@@ -25,7 +34,24 @@ CHECK_INTERVAL = 120
 REPORTE_INTERVAL = 3600
 RESTART_BROWSER_INTERVAL = 86400  # 24 horas
 CHILE_TZ = ZoneInfo("America/Santiago")
+AGROCLIMA_URL = "https://www.agroclima.cl/InfoInforme/Evapotranspiracion?codigo=270026"
 
+SECTORES_RIEGO = {
+    "1-5-10": {"mm_h": 1.50},
+    "6-10-11": {"mm_h": 1.50},
+    "8": {"mm_h": 1.50},
+    "9": {"mm_h": 1.50},
+    "13": {"mm_h": 1.50},
+    "2-3": {"mm_h": 1.33},
+    "4": {"mm_h": 1.33},
+    "7": {"mm_h": 1.33},
+    "12": {"mm_h": 1.33},
+}
+
+FACTOR_LAVADO = 0.10
+LLUVIA_EFECTIVA_MM = 0.0
+
+RIEGO_SECTOR, RIEGO_KC = range(2)
 # ==========================
 # UTILIDADES
 # ==========================
@@ -45,6 +71,98 @@ def estado_caudal(valor):
     if valor < 30:
         return "BAJO", "🟠"
     return "NORMAL", "🟢"
+
+def extraer_numeros_eto(texto):
+    encontrados = re.findall(r"\d+[.,]\d+", texto)
+    return [float(x.replace(",", ".")) for x in encontrados]
+
+
+def obtener_eto_agroclima():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(AGROCLIMA_URL, headers=headers, timeout=30)
+    r.raise_for_status()
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    texto = soup.get_text("\n", strip=True)
+
+    patrones = [
+        r"Evapotranspiración\s*\(mm/día\)\s*([0-9,\.\s]+)",
+        r"Evapotranspiracion\s*\(mm/día\)\s*([0-9,\.\s]+)",
+        r"Evapotranspiración Potencial\s*([0-9,\.\s]+)",
+        r"Evapotranspiracion Potencial\s*([0-9,\.\s]+)",
+    ]
+
+    for patron in patrones:
+        m = re.search(patron, texto, re.IGNORECASE)
+        if m:
+            valores = extraer_numeros_eto(m.group(1))
+            if len(valores) >= 7:
+                return valores
+
+    tablas = soup.find_all("table")
+    for tabla in tablas:
+        txt = tabla.get_text(" ", strip=True)
+        if "Evapotranspir" in txt or "mm/día" in txt or "mm/dia" in txt:
+            nums = extraer_numeros_eto(txt)
+            if len(nums) >= 7:
+                return nums
+
+    raise ValueError("No se pudo extraer la ETo desde Agroclima.")
+
+
+def horas_a_hm(horas_float):
+    horas = int(horas_float)
+    minutos = int(round((horas_float - horas) * 60))
+    if minutos == 60:
+        horas += 1
+        minutos = 0
+    return horas, minutos
+
+
+def calcular_riego_sector(etos, sector, kc, lluvia_efectiva_mm=0.0, factor_lavado=0.0):
+    if len(etos) < 7:
+        raise ValueError("Se requieren al menos 7 valores de ETo.")
+
+    if sector not in SECTORES_RIEGO:
+        raise ValueError("Sector no válido.")
+
+    eto_semana = sum(etos[-7:])
+    mm_h = SECTORES_RIEGO[sector]["mm_h"]
+
+    etc_semana = eto_semana * kc
+    etc_ajustada = max(0.0, etc_semana - lluvia_efectiva_mm)
+    etc_ajustada *= (1 + factor_lavado)
+
+    horas_semana = etc_ajustada / mm_h if mm_h > 0 else 0
+    horas_dia = horas_semana / 7
+
+    return {
+        "sector": sector,
+        "kc": round(kc, 2),
+        "eto_semana": round(eto_semana, 2),
+        "etc_semana": round(etc_semana, 2),
+        "etc_ajustada": round(etc_ajustada, 2),
+        "mm_h": mm_h,
+        "horas_semana": round(horas_semana, 2),
+        "horas_dia": round(horas_dia, 2),
+    }
+
+
+def formatear_resultado_riego(data):
+    hs, ms = horas_a_hm(data["horas_semana"])
+    hd, md = horas_a_hm(data["horas_dia"])
+
+    return (
+        f"<b>💧 RIEGO SEMANAL</b>\n\n"
+        f"<b>Sector:</b> {data['sector']}\n"
+        f"<b>Kc:</b> {data['kc']}\n"
+        f"<b>ETo acumulada 7 días:</b> {data['eto_semana']} mm\n"
+        f"<b>ETc semanal:</b> {data['etc_semana']} mm\n"
+        f"<b>Precipitación del sector:</b> {data['mm_h']} mm/h\n"
+        f"<b>Riego semanal:</b> {hs} h {ms:02d} min\n"
+        f"<b>Promedio diario:</b> {hd} h {md:02d} min\n\n"
+        f"🕐 {ahora()}"
+    )
 
 # ==========================
 # MONITOR
@@ -228,6 +346,7 @@ class Monitor:
                     continue
 
                 datos = await self.obtener_datos()
+                self.fallos_consecutivos = 0
 
                 for nombre, caudal in datos.items():
                     anterior = self.ultimos.get(nombre)
@@ -354,6 +473,86 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Tu chat ID es: {update.effective_chat.id}")
 
+async def cmd_riego_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sectores_txt = "\n".join(f"• {s}" for s in SECTORES_RIEGO.keys())
+
+    await update.message.reply_text(
+        "💧 Cálculo de riego semanal\n\n"
+        "Ingresa el sector que deseas calcular:\n\n"
+        f"{sectores_txt}\n\n"
+        "Escribe exactamente uno de esos sectores.\n"
+        "Para salir usa /cancelar"
+    )
+    return RIEGO_SECTOR
+
+
+async def cmd_riego_sector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sector = update.message.text.strip().replace(" ", "")
+
+    if sector not in SECTORES_RIEGO:
+        await update.message.reply_text(
+            "⚠ Sector no válido.\n"
+            "Escribe uno de estos sectores:\n\n"
+            + "\n".join(f"• {s}" for s in SECTORES_RIEGO.keys())
+        )
+        return RIEGO_SECTOR
+
+    context.user_data["sector_riego"] = sector
+
+    await update.message.reply_text(
+        f"✅ Sector seleccionado: {sector}\n\n"
+        "Ahora ingresa el valor de Kc.\n"
+        "Ejemplo: 0.9"
+    )
+    return RIEGO_KC
+
+
+async def cmd_riego_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto_kc = update.message.text.strip().replace(",", ".")
+
+    try:
+        kc = float(texto_kc)
+    except ValueError:
+        await update.message.reply_text(
+            "⚠ Kc no válido. Ingresa un número.\nEjemplo: 0.9"
+        )
+        return RIEGO_KC
+
+    if kc <= 0 or kc > 2:
+        await update.message.reply_text(
+            "⚠ El Kc parece fuera de rango.\nIngresa un valor razonable, por ejemplo 0.9"
+        )
+        return RIEGO_KC
+
+    sector = context.user_data.get("sector_riego")
+
+    try:
+        etos = obtener_eto_agroclima()
+        resultado = calcular_riego_sector(
+            etos=etos,
+            sector=sector,
+            kc=kc,
+            lluvia_efectiva_mm=LLUVIA_EFECTIVA_MM,
+            factor_lavado=FACTOR_LAVADO
+        )
+
+        mensaje = formatear_resultado_riego(resultado)
+        await update.message.reply_text(mensaje, parse_mode="HTML")
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error al calcular riego:\n{str(e)}"
+        )
+
+    context.user_data.pop("sector_riego", None)
+    return ConversationHandler.END
+
+
+async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("sector_riego", None)
+    await update.message.reply_text("❌ Operación cancelada.")
+    return ConversationHandler.END
+
 # ==========================
 # MAIN
 # ==========================
@@ -369,6 +568,21 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("restart", cmd_restart))
     app.add_handler(CommandHandler("id", cmd_id))
+
+    riego_handler = ConversationHandler(
+        entry_points=[CommandHandler("riego", cmd_riego_inicio)],
+        states={
+            RIEGO_SECTOR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_riego_sector)
+            ],
+            RIEGO_KC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_riego_kc)
+            ],
+        },
+        fallbacks=[CommandHandler("cancelar", cmd_cancelar)],
+    )
+
+    app.add_handler(riego_handler)
 
     async def post_init(app: Application):
         await monitor.iniciar()
