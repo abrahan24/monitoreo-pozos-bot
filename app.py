@@ -762,12 +762,8 @@ def main():
     app.post_init = post_init
     
     app.run_polling(
-        drop_pending_updates=True,
-        timeout=30,
-        read_timeout=60,
-        write_timeout=30,
-        connect_timeout=30,
-        pool_timeout=30,
+    drop_pending_updates=True,
+    timeout=30,
     )
 
 if __name__ == "__main__":
