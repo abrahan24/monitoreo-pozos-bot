@@ -49,6 +49,19 @@ SECTORES_RIEGO = {
     "12": {"mm_h": 1.33},
 }
 
+ETAPAS_UVA_KC = [
+    ("Brotación", 0.30),
+    ("Desarrollo inicial de brotes", 0.40),
+    ("Prefloración", 0.50),
+    ("Floración", 0.60),
+    ("Cuaja", 0.70),
+    ("Crecimiento de bayas", 0.80),
+    ("Cierre de racimo", 0.90),
+    ("Envero", 0.85),
+    ("Maduración", 0.75),
+    ("Postcosecha", 0.55),
+]
+
 FACTOR_LAVADO = 0.10
 LLUVIA_EFECTIVA_MM = 0.0
 
@@ -184,6 +197,12 @@ def formatear_resultado_riego(data: dict) -> str:
         f"<b>Promedio diario:</b> {hd} h {md:02d} min\n\n"
         f"🕐 {ahora()}"
     )
+
+def formatear_lista_kc_uva() -> str:
+    lineas = ["<b>🍇 Kc referencial para uva</b>", ""]
+    for etapa, kc in ETAPAS_UVA_KC:
+        lineas.append(f"• {etapa}: <b>{kc:.2f}</b>")
+    return "\n".join(lineas)
 
 # ==========================
 # MONITOR
@@ -507,7 +526,7 @@ async def cmd_riego_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💧 Cálculo de riego semanal\n\n"
         "Ingresa el sector que deseas calcular:\n\n"
         f"{sectores_txt}\n\n"
-        "Escribe exactamente uno de esos sectores.\n"
+        "Luego el bot te mostrará una lista referencial de Kc para uva.\n"
         "Para salir usa /cancelar"
     )
     return RIEGO_SECTOR
@@ -529,11 +548,14 @@ async def cmd_riego_sector(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["sector_riego"] = sector
 
-    await update.message.reply_text(
+    mensaje_kc = (
         f"✅ Sector seleccionado: {sector}\n\n"
+        f"{formatear_lista_kc_uva()}\n\n"
         "Ahora ingresa el valor de Kc.\n"
-        "Ejemplo: 0.9"
+        "Ejemplo: 0.90"
     )
+
+    await update.message.reply_text(mensaje_kc, parse_mode="HTML")
     return RIEGO_KC
 
 
