@@ -89,6 +89,15 @@ def estado_caudal(valor: float):
         return "BAJO", "🟠"
     return "NORMAL", "🟢"
 
+def extraer_ult_dato_min(texto: str):
+    """
+    Extrae los minutos desde líneas tipo:
+    'Ult. dato hace: 2 min'
+    """
+    match = re.search(r"Ult\.\s*dato\s*hace:\s*(\d+)\s*min", texto, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
 
 def extraer_numeros_eto(texto: str) -> list[float]:
     encontrados = re.findall(r"\d+[.,]\d+", texto)
@@ -241,6 +250,9 @@ class Monitor:
 
         self.ultimos = {}
         self.alertas = {}
+        self.alertas_telemetria = {}
+        self.telemetria_estado = {}
+        self.intervalo_alerta_telemetria = 600  # 10 min entre alertas repetidas
         self.ultimo_reporte = None
         self.inicio_browser = None
 
@@ -323,10 +335,15 @@ class Monitor:
         for el in elementos:
             texto = await el.inner_text()
             nombre = texto.split("\n")[0].strip()
-            match = re.search(r"Caudal:\s*([0-9\.]+)", texto)
 
-            if match:
-                datos[nombre] = float(match.group(1))
+            match_caudal = re.search(r"Caudal:\s*([0-9\.]+)", texto)
+            ult_dato_min = extraer_ult_dato_min(texto)
+
+            datos[nombre] = {
+                "caudal": float(match_caudal.group(1)) if match_caudal else 0.0,
+                "ult_dato_min": ult_dato_min,
+                "texto_crudo": texto,
+            }
 
         return datos
 
@@ -369,6 +386,51 @@ class Monitor:
                     f"<b>📅 {ahora()}</b>"
                 )
                 await self.enviar(app, mensaje)
+
+    async def procesar_alerta_telemetria(self, app: Application, nombre: str, ult_dato_min):
+        """
+        Alerta cuando el último dato recibido supera 10 minutos.
+        Envía recuperación cuando vuelve a <= 10 min.
+        """
+        if ult_dato_min is None:
+            return
+
+        ahora_ts = ahora_dt()
+        caida = ult_dato_min > 10
+        estado_anterior = self.telemetria_estado.get(nombre, False)
+
+        # Si está caída la telemetría
+        if caida:
+            ultima_alerta = self.alertas_telemetria.get(nombre)
+
+            if (not estado_anterior) or (
+                not ultima_alerta or
+                (ahora_ts - ultima_alerta).total_seconds() >= self.intervalo_alerta_telemetria
+            ):
+                mensaje = (
+                    f"<b>📡 FALLA DE TELEMETRÍA</b>\n\n"
+                    f"<b>Pozo:</b> {nombre}\n"
+                    f"<b>Último dato hace:</b> {ult_dato_min} min\n"
+                    f"<b>Estado:</b> Sin actualización reciente\n"
+                    f"<b>📅 {ahora()}</b>"
+                )
+                await self.enviar(app, mensaje)
+                self.alertas_telemetria[nombre] = ahora_ts
+
+            self.telemetria_estado[nombre] = True
+
+        # Si se recuperó
+        else:
+            if estado_anterior:
+                mensaje = (
+                    f"<b>✅ TELEMETRÍA RECUPERADA</b>\n\n"
+                    f"<b>Pozo:</b> {nombre}\n"
+                    f"<b>Último dato hace:</b> {ult_dato_min} min\n"
+                    f"<b>📅 {ahora()}</b>"
+                )
+                await self.enviar(app, mensaje)
+
+            self.telemetria_estado[nombre] = False
 
     async def reporte_horario(self, app: Application):
         ahora_actual = ahora_dt()
@@ -418,10 +480,15 @@ class Monitor:
                 datos = await self.obtener_datos()
                 self.fallos_consecutivos = 0
 
-                for nombre, caudal in datos.items():
+                for nombre, info in datos.items():
+                    caudal = info.get("caudal", 0.0)
+                    ult_dato_min = info.get("ult_dato_min")
+
                     anterior = self.ultimos.get(nombre)
                     self.ultimos[nombre] = caudal
+
                     await self.procesar_alertas(app, nombre, caudal, anterior)
+                    await self.procesar_alerta_telemetria(app, nombre, ult_dato_min)
 
                 await self.reporte_horario(app)
 
