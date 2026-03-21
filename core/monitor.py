@@ -164,7 +164,7 @@ class Monitor:
             return
 
         ahora_ts = ahora_dt()
-        caida = ult_dato_min > 10
+        caida = ult_dato_min > 15
         estado_anterior = self.telemetria_estado.get(nombre, False)
 
         # Si está caída la telemetría
@@ -204,31 +204,23 @@ class Monitor:
         ahora_actual = ahora_dt()
 
         if self.ultimo_reporte and \
-           (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
+        (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
             return
 
         if not self.ultimos:
             return
 
-        detenidos = sum(1 for v in self.ultimos.values() if v == 0)
-        criticos = sum(1 for v in self.ultimos.values() if 0 < v < 10)
-        bajos = sum(1 for v in self.ultimos.values() if 10 <= v < 30)
-        normales = sum(1 for v in self.ultimos.values() if v >= 30)
-
-        detalle = ""
-        for nombre, caudal in sorted(self.ultimos.items()):
-            _, emoji = estado_caudal(caudal)
-            detalle += f"{emoji} <b>{nombre}</b>: {caudal} L/s\n"
+        detalle = "\n".join(
+            f"{estado_caudal(caudal)[1]} <b>{nombre}</b>\n"
+            f"   ↳ <code>{caudal} L/s</code>"
+            for nombre, caudal in sorted(self.ultimos.items())
+        )
 
         mensaje = (
-            f"<b>📊 REPORTE HORARIO</b>\n\n"
-            f"🔴 Detenidos: {detenidos}\n"
-            f"🔴 Críticos: {criticos}\n"
-            f"🟠 Bajos: {bajos}\n"
-            f"🟢 Normales: {normales}\n\n"
-            f"<b>📍 DETALLE POR POZO</b>\n"
-            f"{detalle}\n"
-            f"<b>📅 {ahora()}</b>"
+            f"<b>📡 MONITOREO HORARIO DE POZOS</b>\n\n"
+            f"<b>📍 Estado actual</b>\n"
+            f"{detalle}\n\n"
+            f"🕒 <b>Actualizado:</b> {ahora()}"
         )
 
         await self.enviar(app, mensaje)

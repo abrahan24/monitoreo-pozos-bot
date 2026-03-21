@@ -22,3 +22,9 @@ ETAPAS_UVA_KC = [
     ("Maduración", 0.75),
     ("Postcosecha", 0.55),
 ]
+
+EQUIPOS_RIEGO = {
+    "equipo_1": ["6-10-11", "1-5-10", "2-3"],
+    "equipo_2": ["9", "8", "13"],
+    "equipo_3": ["4", "7", "12"],
+}
