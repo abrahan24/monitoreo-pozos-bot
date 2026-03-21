@@ -210,17 +210,21 @@ class Monitor:
         if not self.ultimos:
             return
 
-        detalle = "\n".join(
+        pozos_ordenados = sorted(self.ultimos.items(), key=lambda x: x[1])
+
+        detalle = "\n\n".join(
             f"{estado_caudal(caudal)[1]} <b>{nombre}</b>\n"
-            f"   ↳ <code>{caudal} L/s</code>"
-            for nombre, caudal in sorted(self.ultimos.items())
+            f"   ↳ Estado: <b>{estado_caudal(caudal)[0].capitalize()}</b>\n"
+            f"   ↳ Caudal: <code>{caudal:.1f} L/s</code>"
+            for nombre, caudal in pozos_ordenados
         )
 
         mensaje = (
-            f"<b>📡 MONITOREO HORARIO DE POZOS</b>\n\n"
-            f"<b>📍 Estado actual</b>\n"
+            f"<b>📡 ESTADO OPERATIVO DE POZOS BUITRON (COPAYAPU)</b>\n"
+            f"<i>Sistema de monitoreo automático</i>\n\n"
+            f"<b>📍 Estado por pozo</b>\n"
             f"{detalle}\n\n"
-            f"🕒 <b>Actualizado:</b> {ahora()}"
+            f"🕒 <b>Hora de monitoreo:</b> {ahora()}"
         )
 
         await self.enviar(app, mensaje)
