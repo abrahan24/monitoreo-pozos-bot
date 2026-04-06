@@ -27,7 +27,10 @@ def obtener_eto_agroclima() -> list[float]:
         if m:
             valores = extraer_numeros_eto(m.group(1))
             valores = [v for v in valores if 0 <= v <= 15]
-            if len(valores) >= 7:
+
+            if valores:
+                if len(valores) < 7:
+                    print(f"Advertencia: solo se encontraron {len(valores)} valores de ETo.")
                 return valores[-7:]
 
     tablas = soup.find_all("table")
@@ -36,7 +39,10 @@ def obtener_eto_agroclima() -> list[float]:
         if "Evapotranspir" in txt or "mm/día" in txt or "mm/dia" in txt:
             nums = extraer_numeros_eto(txt)
             nums = [v for v in nums if 0 <= v <= 15]
-            if len(nums) >= 7:
+
+            if nums:
+                if len(nums) < 7:
+                    print(f"Advertencia: solo se encontraron {len(nums)} valores de ETo.")
                 return nums[-7:]
 
     raise ValueError("No se pudo extraer la ETo desde Agroclima.")
