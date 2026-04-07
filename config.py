@@ -6,7 +6,8 @@ PASSWORD = os.getenv("LEM_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHATS = [c.strip() for c in os.getenv("CHAT_IDS", "").split(",") if c.strip()]
 ADMIN_ID = os.getenv("ADMIN_ID")
-TELEGRAM_ALERT_CHAT_ID = os.getenv("TELEGRAM_ALERT_CHAT_ID")
+_chat_id = os.getenv("TELEGRAM_ALERT_CHAT_ID")
+TELEGRAM_ALERT_CHAT_ID = int(_chat_id) if _chat_id else None
 
 LOGIN_URL = "http://login.lemsystem.cl/"
 PANEL_URL = "http://optimus.lemsystem.cl/LemSense.php"
