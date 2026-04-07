@@ -1,11 +1,52 @@
 import asyncio
+import logging
+
 from telegram.ext import Application
 from telegram.request import HTTPXRequest
 
-from config import TOKEN
+from config import TOKEN, TELEGRAM_ALERT_CHAT_ID
 from core.monitor import Monitor
+from core.agroclima import ejecutar_cierre_con_mensaje
 from bot.commands import error_handler
 from bot.handlers import registrar_handlers
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log", encoding="utf-8"),
+    ],
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def tarea_revision_cierre(context):
+    """
+    Revisa si toca ejecutar el cierre mensual.
+    Si corresponde, guarda y envía mensaje por Telegram.
+    """
+    try:
+        mensaje = ejecutar_cierre_con_mensaje()
+
+        if mensaje:
+            logger.info("Se generó mensaje de cierre mensual: %s", mensaje)
+
+            if TELEGRAM_ALERT_CHAT_ID:
+                await context.bot.send_message(
+                    chat_id=TELEGRAM_ALERT_CHAT_ID,
+                    text=mensaje,
+                    parse_mode="HTML",
+                )
+                logger.info("Mensaje de cierre mensual enviado a Telegram.")
+            else:
+                logger.warning("No existe TELEGRAM_ALERT_CHAT_ID; solo se registró en log.")
+
+    except Exception:
+        logger.exception("Error en tarea_revision_cierre")
+
 
 def main():
     if not TOKEN:
@@ -35,10 +76,25 @@ def main():
     async def post_init(application: Application):
         await monitor.iniciar()
         asyncio.create_task(monitor.loop(application))
-        print("🚀 Bot iniciado correctamente en Railway")
+
+        # Revisión al iniciar el bot
+        await tarea_revision_cierre(application)
+
+        # Revisión automática cada hora
+        if application.job_queue:
+            application.job_queue.run_repeating(
+                tarea_revision_cierre,
+                interval=3600,   # cada 1 hora
+                first=30,        # primera revisión 30 segundos después de iniciar
+                name="revision_cierre_mensual",
+            )
+            logger.info("Job de revisión de cierre mensual programado cada 1 hora.")
+
+        logger.info("🚀 Bot iniciado correctamente en Railway")
 
     app.post_init = post_init
     app.run_polling(drop_pending_updates=True, timeout=30)
+
 
 if __name__ == "__main__":
     main()
