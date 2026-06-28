@@ -23,13 +23,18 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lineas = ["<b>📊 Estado actual</b>", ""]
 
     for nombre, valor in sorted(monitor.ultimos.items()):
-        estado, emoji = estado_caudal(valor)
-        lineas.extend([
-            f"<b>{nombre}</b>",
-            f"Caudal: <b>{valor} L/s</b>",
-            f"Estado: {emoji} <b>{estado}</b>",
-            "",
-        ])
+        info = monitor.detalles.get(nombre, {})
+        if info:
+            lineas.append(monitor._formatear_resumen_pozo(info, valor))
+        else:
+            estado, emoji = estado_caudal(valor)
+            lineas.extend([
+                f"{emoji} <b>{nombre}</b>",
+                f"Caudal: <b>{valor} L/s</b>",
+                f"Estado: <b>{estado}</b>",
+            ])
+
+        lineas.append("")
 
     lineas.extend([f"🕐 {ahora()}"])
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")

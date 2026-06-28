@@ -25,6 +25,7 @@ class Monitor:
         self.page = None
 
         self.ultimos = {}
+        self.detalles = {}
         self.alertas = {}
         self.alertas_telemetria = {}
         self.telemetria_estado = {}
@@ -110,24 +111,25 @@ class Monitor:
 
         for el in elementos:
             texto = await el.inner_text()
-            texto = re.sub(r"\s+", " ", texto).strip()
-            nombre = self._extraer_nombre_pozo(texto)
-
-            match_caudal = re.search(r"Caudal:\s*([0-9\.]+)", texto)
-            ult_dato_min = extraer_ult_dato_min(texto)
-
-            datos[nombre] = {
-                "caudal": float(match_caudal.group(1)) if match_caudal else 0.0,
-                "ult_dato_min": ult_dato_min,
-                "texto_crudo": texto,
-            }
+            info = self._parsear_bloque_pozo(texto)
+            datos[info["nombre"]] = info
 
         return datos
 
     @staticmethod
-    def _extraer_nombre_pozo(texto: str) -> str:
+    def _to_float(valor: str | None) -> float | None:
+        if valor is None:
+            return None
+        try:
+            return float(valor.replace(",", "."))
+        except ValueError:
+            return None
+
+    def _parsear_bloque_pozo(self, texto: str) -> dict:
+        texto = re.sub(r"\s+", " ", texto).strip()
+
         fin_nombre = re.search(
-            r"\s(?:Caudal:|Altura Agua:|Vol total:|Ult\.\s*dato hace:|Ver aplicación)\b",
+            r"(Nodo:|Caudal:|Altura Agua:|Vol total:|Ult\.\s*dato hace:|Ver aplicación)",
             texto,
             re.IGNORECASE,
         )
@@ -137,7 +139,22 @@ class Monitor:
             nombre = texto.strip()
 
         nombre = re.sub(r"^Pozo:\s*", "", nombre, flags=re.IGNORECASE)
-        return nombre
+
+        nodo_match = re.search(r"Nodo:\s*(\d+)", texto, re.IGNORECASE)
+        caudal_match = re.search(r"Caudal:\s*([-0-9.,]+)\s*L/s", texto, re.IGNORECASE)
+        altura_match = re.search(r"Altura Agua:\s*([-0-9.,]+)\s*m", texto, re.IGNORECASE)
+        vol_match = re.search(r"Vol total:\s*([-0-9.,]+)\s*m3", texto, re.IGNORECASE)
+        ult_dato_min = extraer_ult_dato_min(texto)
+
+        return {
+            "nombre": nombre,
+            "nodo": nodo_match.group(1) if nodo_match else None,
+            "caudal": self._to_float(caudal_match.group(1)) if caudal_match else 0.0,
+            "altura_agua": self._to_float(altura_match.group(1)) if altura_match else None,
+            "vol_total": self._to_float(vol_match.group(1)) if vol_match else None,
+            "ult_dato_min": ult_dato_min,
+            "texto_crudo": texto,
+        }
 
     async def enviar(self, app: Application, mensaje: str):
         for chat in CHATS:
@@ -150,9 +167,18 @@ class Monitor:
             except Exception as e:
                 print("Error Telegram:", e)
 
-    async def procesar_alertas(self, app: Application, nombre: str, caudal: float, anterior):
+    async def procesar_alertas(self, app: Application, info: dict, anterior):
+        nombre = info["nombre"]
+        caudal = info.get("caudal", 0.0)
         estado, emoji = estado_caudal(caudal)
         ahora_ts = ahora_dt()
+        nodo = info.get("nodo") or "-"
+        altura_agua = info.get("altura_agua")
+        vol_total = info.get("vol_total")
+        ult_dato_min = info.get("ult_dato_min")
+        altura_txt = f"{altura_agua} m" if altura_agua is not None else "-"
+        vol_txt = f"{vol_total} m3" if vol_total is not None else "-"
+        ult_dato_txt = f"{ult_dato_min} min" if ult_dato_min is not None else "-"
 
         if estado in ["DETENIDO", "CRÍTICO"]:
             ultima_alerta = self.alertas.get(nombre)
@@ -161,7 +187,11 @@ class Monitor:
                 mensaje = (
                     f"<b>{emoji} {estado}</b>\n\n"
                     f"Pozo: <b>{nombre}</b>\n"
+                    f"Nodo: <b>{nodo}</b>\n"
                     f"Caudal: <b>{caudal} L/s</b>\n"
+                    f"Altura agua: <b>{altura_txt}</b>\n"
+                    f"Vol total: <b>{vol_txt}</b>\n"
+                    f"Último dato hace: <b>{ult_dato_txt}</b>\n"
                     f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
@@ -173,17 +203,23 @@ class Monitor:
                 mensaje = (
                     f"<b>{emoji} Cambio de estado</b>\n\n"
                     f"Pozo: <b>{nombre}</b>\n"
+                    f"Nodo: <b>{nodo}</b>\n"
                     f"Nuevo estado: <b>{estado}</b>\n"
                     f"Caudal: <b>{caudal} L/s</b>\n"
+                    f"Altura agua: <b>{altura_txt}</b>\n"
+                    f"Vol total: <b>{vol_txt}</b>\n"
+                    f"Último dato hace: <b>{ult_dato_txt}</b>\n"
                     f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
 
-    async def procesar_alerta_telemetria(self, app: Application, nombre: str, ult_dato_min):
+    async def procesar_alerta_telemetria(self, app: Application, info: dict):
         """
         Alerta cuando el último dato recibido supera 15 minutos.
         Envía recuperación cuando vuelve a <= 15 min.
         """
+        nombre = info["nombre"]
+        ult_dato_min = info.get("ult_dato_min")
         if ult_dato_min is None:
             return
 
@@ -198,10 +234,16 @@ class Monitor:
                 not ultima_alerta
                 or (ahora_ts - ultima_alerta).total_seconds() >= self.intervalo_alerta_telemetria
             ):
+                altura_agua = info.get("altura_agua")
+                vol_total = info.get("vol_total")
                 mensaje = (
                     f"<b>📡 Falla de telemetría</b>\n\n"
                     f"Pozo: <b>{nombre}</b>\n"
+                    f"Nodo: <b>{info.get('nodo') or '-'}</b>\n"
                     f"Último dato hace: <b>{ult_dato_min} min</b>\n"
+                    f"Caudal: <b>{info.get('caudal', 0.0)} L/s</b>\n"
+                    f"Altura agua: <b>{altura_agua if altura_agua is not None else '-'} m</b>\n"
+                    f"Vol total: <b>{vol_total if vol_total is not None else '-'} m3</b>\n"
                     f"Estado: Sin actualización reciente\n"
                     f"Fecha: {ahora()}"
                 )
@@ -215,6 +257,7 @@ class Monitor:
                 mensaje = (
                     f"<b>✅ Telemetría recuperada</b>\n\n"
                     f"Pozo: <b>{nombre}</b>\n"
+                    f"Nodo: <b>{info.get('nodo') or '-'}</b>\n"
                     f"Último dato hace: <b>{ult_dato_min} min</b>\n"
                     f"Fecha: {ahora()}"
                 )
@@ -234,9 +277,7 @@ class Monitor:
         pozos_ordenados = sorted(self.ultimos.items(), key=lambda x: x[1])
 
         detalle = "\n\n".join(
-            f"{estado_caudal(caudal)[1]} <b>{nombre}</b>\n"
-            f"Estado: {estado_caudal(caudal)[0].capitalize()}\n"
-            f"Caudal: <code>{caudal:.1f} L/s</code>"
+            self._formatear_resumen_pozo(self.detalles.get(nombre, {}), caudal)
             for nombre, caudal in pozos_ordenados
         )
 
@@ -250,6 +291,24 @@ class Monitor:
 
         await self.enviar(app, mensaje)
         self.ultimo_reporte = ahora_actual
+
+    def _formatear_resumen_pozo(self, info: dict, caudal: float) -> str:
+        nombre = info.get("nombre") or "Sin nombre"
+        nodo = info.get("nodo") or "-"
+        altura_agua = info.get("altura_agua")
+        vol_total = info.get("vol_total")
+        ult_dato_min = info.get("ult_dato_min")
+        estado, emoji = estado_caudal(caudal)
+
+        return (
+            f"{emoji} <b>{nombre}</b>\n"
+            f"Nodo: {nodo}\n"
+            f"Estado: {estado}\n"
+            f"Caudal: <b>{caudal:.1f} L/s</b>\n"
+            f"Altura agua: {altura_agua if altura_agua is not None else '-'} m\n"
+            f"Vol total: {vol_total if vol_total is not None else '-'} m3\n"
+            f"Último dato hace: {ult_dato_min if ult_dato_min is not None else '-'} min"
+        )
 
     async def loop(self, app: Application):
         while True:
@@ -266,13 +325,13 @@ class Monitor:
 
                 for nombre, info in datos.items():
                     caudal = info.get("caudal", 0.0)
-                    ult_dato_min = info.get("ult_dato_min")
 
                     anterior = self.ultimos.get(nombre)
                     self.ultimos[nombre] = caudal
+                    self.detalles[nombre] = info
 
-                    await self.procesar_alertas(app, nombre, caudal, anterior)
-                    await self.procesar_alerta_telemetria(app, nombre, ult_dato_min)
+                    await self.procesar_alertas(app, info, anterior)
+                    await self.procesar_alerta_telemetria(app, info)
 
                 await self.reporte_horario(app)
 
