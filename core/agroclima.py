@@ -5,6 +5,7 @@ import requests
 from pathlib import Path
 from datetime import date, timedelta
 from bs4 import BeautifulSoup
+
 from config import AGROCLIMA_URL
 from core.utils import extraer_numeros_eto
 
@@ -220,9 +221,9 @@ def ejecutar_cierre_con_mensaje() -> str | None:
         respaldo = guardar_respaldo_fin_de_mes(etos)
 
         mensaje = (
-            "✅ <b>Cierre mensual de ETo guardado</b>\n"
-            f"📅 Fecha: {respaldo['fecha_guardado']}\n"
-            f"📊 Últimos ETo guardados: {respaldo['etos']}"
+            "✅ <b>Cierre mensual de ETo guardado</b>\n\n"
+            f"• Fecha: {respaldo['fecha_guardado']}\n"
+            f"• Últimos ETo guardados: {respaldo['etos']}"
         )
 
         logger.info("Mensaje de cierre mensual listo para enviar.")

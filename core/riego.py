@@ -1,6 +1,7 @@
 from data.sectores import SECTORES_RIEGO, ETAPAS_UVA_KC
 from core.utils import horas_a_hm, ahora
 
+
 def calcular_riego_sector(etos, sector, kc, lluvia_efectiva_mm=0.0, factor_lavado=0.0):
     if not etos:
         raise ValueError("No se recibieron valores de ETo.")
@@ -38,27 +39,31 @@ def formatear_resultado_riego(data):
     hp, mp = horas_a_hm(data["horas_periodo"])
     hd, md = horas_a_hm(data["horas_dia"])
 
-    return (
-        f"<b>💧 RIEGO DEL PERÍODO</b>\n\n"
-        f"<b>Sector:</b> {data['sector']}\n"
-        f"<b>Kc:</b> {data['kc']}\n"
-        f"<b>Días calculados:</b> {data['dias_calculados']}\n"
-        f"<b>ETo acumulada:</b> {data['eto_periodo']} mm\n"
-        f"<b>ETc del período:</b> {data['etc_periodo']} mm\n"
-        f"<b>Precipitación del sector:</b> {data['mm_h']} mm/h\n"
-        f"<b>Riego del período:</b> {hp} h {mp:02d} min\n"
-        f"<b>Promedio diario:</b> {hd} h {md:02d} min\n\n"
-        f"🕐 {ahora()}"
-    )
+    lineas = [
+        "<b>💧 Riego del período</b>",
+        "",
+        f"• <b>Sector:</b> {data['sector']}",
+        f"• <b>Kc:</b> {data['kc']}",
+        f"• <b>Días calculados:</b> {data['dias_calculados']}",
+        f"• <b>ETo acumulada:</b> {data['eto_periodo']} mm",
+        f"• <b>ETc del período:</b> {data['etc_periodo']} mm",
+        f"• <b>Precipitación del sector:</b> {data['mm_h']} mm/h",
+        f"• <b>Riego del período:</b> {hp} h {mp:02d} min",
+        f"• <b>Promedio diario:</b> {hd} h {md:02d} min",
+        "",
+        f"🕐 {ahora()}",
+    ]
+
+    return "\n".join(lineas)
 
 
 def formatear_resultado_riego_general(resultados):
-    lineas = ["<b>💧 RIEGO GENERAL</b>", ""]
+    lineas = ["<b>💧 Riego general</b>", ""]
 
     if resultados:
-        lineas.append(f"<b>Días calculados:</b> {resultados[0]['dias_calculados']}")
-        lineas.append(f"<b>ETo acumulada:</b> {resultados[0]['eto_periodo']} mm")
-        lineas.append(f"<b>Kc aplicado:</b> {resultados[0]['kc']}")
+        lineas.append(f"• <b>Días calculados:</b> {resultados[0]['dias_calculados']}")
+        lineas.append(f"• <b>ETo acumulada:</b> {resultados[0]['eto_periodo']} mm")
+        lineas.append(f"• <b>Kc aplicado:</b> {resultados[0]['kc']}")
         lineas.append("")
 
     for data in resultados:

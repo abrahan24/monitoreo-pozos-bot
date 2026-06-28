@@ -1,13 +1,21 @@
 import re
 import asyncio
+
 from playwright.async_api import async_playwright
 from telegram.ext import Application
 
 from config import (
-    CHATS, USERNAME, PASSWORD, LOGIN_URL, PANEL_URL,
-    CHECK_INTERVAL, REPORTE_INTERVAL, RESTART_BROWSER_INTERVAL
+    CHATS,
+    USERNAME,
+    PASSWORD,
+    LOGIN_URL,
+    PANEL_URL,
+    CHECK_INTERVAL,
+    REPORTE_INTERVAL,
+    RESTART_BROWSER_INTERVAL,
 )
 from core.utils import ahora, ahora_dt, estado_caudal, extraer_ult_dato_min
+
 
 class Monitor:
     def __init__(self):
@@ -20,7 +28,7 @@ class Monitor:
         self.alertas = {}
         self.alertas_telemetria = {}
         self.telemetria_estado = {}
-        self.intervalo_alerta_telemetria = 600  # 10 min entre alertas repetidas
+        self.intervalo_alerta_telemetria = 600
         self.ultimo_reporte = None
         self.inicio_browser = None
 
@@ -73,13 +81,13 @@ class Monitor:
             await self.login()
             self.inicio_browser = ahora_dt()
 
-            print("🟢 Navegador iniciado correctamente")
+            print("Navegador iniciado correctamente")
 
     async def login(self):
         if not USERNAME or not PASSWORD:
             raise ValueError("Faltan variables de entorno LEM_USERNAME o LEM_PASSWORD.")
 
-        print("🔐 Iniciando sesión...")
+        print("Iniciando sesión...")
         await self.page.goto(LOGIN_URL, timeout=60000)
 
         await self.page.fill("input[placeholder='Usuario']", USERNAME)
@@ -92,7 +100,7 @@ class Monitor:
         await self.page.wait_for_timeout(5000)
 
         if "login" in self.page.url.lower():
-            print("⚠ Sesión expirada. Reintentando login...")
+            print("Sesión expirada. Reintentando login...")
             await self.login()
             await self.page.goto(PANEL_URL, timeout=60000)
             await self.page.wait_for_timeout(5000)
@@ -121,7 +129,7 @@ class Monitor:
                 await app.bot.send_message(
                     chat_id=chat,
                     text=mensaje,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
                 )
             except Exception as e:
                 print("Error Telegram:", e)
@@ -136,9 +144,9 @@ class Monitor:
             if not ultima_alerta or (ahora_ts - ultima_alerta).total_seconds() >= 120:
                 mensaje = (
                     f"<b>{emoji} {estado}</b>\n\n"
-                    f"<b>Pozo:</b> {nombre}\n"
-                    f"<b>Caudal:</b> {caudal} L/s\n"
-                    f"<b>📅 {ahora()}</b>"
+                    f"• <b>Pozo:</b> {nombre}\n"
+                    f"• <b>Caudal:</b> {caudal} L/s\n"
+                    f"• <b>Fecha:</b> {ahora()}"
                 )
                 await self.enviar(app, mensaje)
                 self.alertas[nombre] = ahora_ts
@@ -147,18 +155,18 @@ class Monitor:
             estado_ant, _ = estado_caudal(anterior)
             if estado != estado_ant:
                 mensaje = (
-                    f"<b>{emoji} CAMBIO DE ESTADO</b>\n\n"
-                    f"<b>Pozo:</b> {nombre}\n"
-                    f"<b>Nuevo estado:</b> {estado}\n"
-                    f"<b>Caudal:</b> {caudal} L/s\n"
-                    f"<b>📅 {ahora()}</b>"
+                    f"<b>{emoji} Cambio de estado</b>\n\n"
+                    f"• <b>Pozo:</b> {nombre}\n"
+                    f"• <b>Nuevo estado:</b> {estado}\n"
+                    f"• <b>Caudal:</b> {caudal} L/s\n"
+                    f"• <b>Fecha:</b> {ahora()}"
                 )
                 await self.enviar(app, mensaje)
 
     async def procesar_alerta_telemetria(self, app: Application, nombre: str, ult_dato_min):
         """
-        Alerta cuando el último dato recibido supera 10 minutos.
-        Envía recuperación cuando vuelve a <= 10 min.
+        Alerta cuando el último dato recibido supera 15 minutos.
+        Envía recuperación cuando vuelve a <= 15 min.
         """
         if ult_dato_min is None:
             return
@@ -167,34 +175,32 @@ class Monitor:
         caida = ult_dato_min > 15
         estado_anterior = self.telemetria_estado.get(nombre, False)
 
-        # Si está caída la telemetría
         if caida:
             ultima_alerta = self.alertas_telemetria.get(nombre)
 
             if (not estado_anterior) or (
-                not ultima_alerta or
-                (ahora_ts - ultima_alerta).total_seconds() >= self.intervalo_alerta_telemetria
+                not ultima_alerta
+                or (ahora_ts - ultima_alerta).total_seconds() >= self.intervalo_alerta_telemetria
             ):
                 mensaje = (
-                    f"<b>📡 FALLA DE TELEMETRÍA</b>\n\n"
-                    f"<b>Pozo:</b> {nombre}\n"
-                    f"<b>Último dato hace:</b> {ult_dato_min} min\n"
-                    f"<b>Estado:</b> Sin actualización reciente\n"
-                    f"<b>📅 {ahora()}</b>"
+                    f"<b>📡 Falla de telemetría</b>\n\n"
+                    f"• <b>Pozo:</b> {nombre}\n"
+                    f"• <b>Último dato hace:</b> {ult_dato_min} min\n"
+                    f"• <b>Estado:</b> Sin actualización reciente\n"
+                    f"• <b>Fecha:</b> {ahora()}"
                 )
                 await self.enviar(app, mensaje)
                 self.alertas_telemetria[nombre] = ahora_ts
 
             self.telemetria_estado[nombre] = True
 
-        # Si se recuperó
         else:
             if estado_anterior:
                 mensaje = (
-                    f"<b>✅ TELEMETRÍA RECUPERADA</b>\n\n"
-                    f"<b>Pozo:</b> {nombre}\n"
-                    f"<b>Último dato hace:</b> {ult_dato_min} min\n"
-                    f"<b>📅 {ahora()}</b>"
+                    f"<b>✅ Telemetría recuperada</b>\n\n"
+                    f"• <b>Pozo:</b> {nombre}\n"
+                    f"• <b>Último dato hace:</b> {ult_dato_min} min\n"
+                    f"• <b>Fecha:</b> {ahora()}"
                 )
                 await self.enviar(app, mensaje)
 
@@ -203,8 +209,7 @@ class Monitor:
     async def reporte_horario(self, app: Application):
         ahora_actual = ahora_dt()
 
-        if self.ultimo_reporte and \
-        (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
+        if self.ultimo_reporte and (ahora_actual - self.ultimo_reporte).total_seconds() < REPORTE_INTERVAL:
             return
 
         if not self.ultimos:
@@ -214,15 +219,15 @@ class Monitor:
 
         detalle = "\n\n".join(
             f"{estado_caudal(caudal)[1]} <b>{nombre}</b>\n"
-            f"   ↳ Estado: <b>{estado_caudal(caudal)[0].capitalize()}</b>\n"
-            f"   ↳ Caudal: <code>{caudal:.1f} L/s</code>"
+            f"  • Estado: <b>{estado_caudal(caudal)[0].capitalize()}</b>\n"
+            f"  • Caudal: <code>{caudal:.1f} L/s</code>"
             for nombre, caudal in pozos_ordenados
         )
 
         mensaje = (
-            f"<b>📡 ESTADO OPERATIVO DE POZOS BUITRON (COPAYAPU)</b>\n"
-            f"<i>Sistema de monitoreo automático</i>\n\n"
-            f"<b>📍 Estado por pozo</b>\n"
+            f"<b>📡 Estado operativo de pozos Buitrón (Copayapu)</b>\n"
+            f"<i>Resumen automático</i>\n\n"
+            f"<b>Estado por pozo</b>\n"
             f"{detalle}\n\n"
             f"🕒 <b>Hora de monitoreo:</b> {ahora()}"
         )
@@ -233,9 +238,8 @@ class Monitor:
     async def loop(self, app: Application):
         while True:
             try:
-                if self.inicio_browser and \
-                   (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
-                    print("♻ Reinicio preventivo programado")
+                if self.inicio_browser and (ahora_dt() - self.inicio_browser).total_seconds() > RESTART_BROWSER_INTERVAL:
+                    print("Reinicio preventivo programado")
                     await asyncio.sleep(2)
                     await self.iniciar()
                     await asyncio.sleep(CHECK_INTERVAL)
@@ -257,16 +261,16 @@ class Monitor:
                 await self.reporte_horario(app)
 
             except Exception as e:
-                print("❌ Error en scraping:", e)
+                print("Error en scraping:", e)
                 self.fallos_consecutivos += 1
 
                 if self.fallos_consecutivos >= self.max_fallos:
-                    print("⚠ Reiniciando navegador por fallos consecutivos...")
+                    print("Reiniciando navegador por fallos consecutivos...")
                     await asyncio.sleep(10)
                     try:
                         await self.iniciar()
                     except Exception as reinicio_error:
-                        print("❌ Error reiniciando navegador:", reinicio_error)
+                        print("Error reiniciando navegador:", reinicio_error)
                     self.fallos_consecutivos = 0
                 else:
                     await asyncio.sleep(30)
