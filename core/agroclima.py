@@ -223,7 +223,8 @@ def ejecutar_cierre_con_mensaje() -> str | None:
         mensaje = (
             "✅ <b>Cierre mensual de ETo guardado</b>\n\n"
             f"• Fecha: {respaldo['fecha_guardado']}\n"
-            f"• Últimos ETo guardados: {respaldo['etos']}"
+            f"• Últimos ETo guardados: {respaldo['etos']}\n\n"
+            "El archivo de respaldo quedó guardado localmente."
         )
 
         logger.info("Mensaje de cierre mensual listo para enviar.")

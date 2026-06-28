@@ -42,14 +42,19 @@ def formatear_resultado_riego(data):
     lineas = [
         "<b>💧 Riego del período</b>",
         "",
-        f"• <b>Sector:</b> {data['sector']}",
-        f"• <b>Kc:</b> {data['kc']}",
-        f"• <b>Días calculados:</b> {data['dias_calculados']}",
-        f"• <b>ETo acumulada:</b> {data['eto_periodo']} mm",
-        f"• <b>ETc del período:</b> {data['etc_periodo']} mm",
-        f"• <b>Precipitación del sector:</b> {data['mm_h']} mm/h",
-        f"• <b>Riego del período:</b> {hp} h {mp:02d} min",
-        f"• <b>Promedio diario:</b> {hd} h {md:02d} min",
+        "<b>Resumen</b>",
+        f"• Sector: {data['sector']}",
+        f"• Kc: {data['kc']}",
+        f"• Días calculados: {data['dias_calculados']}",
+        "",
+        "<b>Balance hídrico</b>",
+        f"• ETo acumulada: {data['eto_periodo']} mm",
+        f"• ETc del período: {data['etc_periodo']} mm",
+        f"• Precipitación del sector: {data['mm_h']} mm/h",
+        "",
+        "<b>Riego recomendado</b>",
+        f"• Riego del período: {hp} h {mp:02d} min",
+        f"• Promedio diario: {hd} h {md:02d} min",
         "",
         f"🕐 {ahora()}",
     ]
@@ -61,9 +66,10 @@ def formatear_resultado_riego_general(resultados):
     lineas = ["<b>💧 Riego general</b>", ""]
 
     if resultados:
-        lineas.append(f"• <b>Días calculados:</b> {resultados[0]['dias_calculados']}")
-        lineas.append(f"• <b>ETo acumulada:</b> {resultados[0]['eto_periodo']} mm")
-        lineas.append(f"• <b>Kc aplicado:</b> {resultados[0]['kc']}")
+        lineas.append("<b>Resumen</b>")
+        lineas.append(f"• Días calculados: {resultados[0]['dias_calculados']}")
+        lineas.append(f"• ETo acumulada: {resultados[0]['eto_periodo']} mm")
+        lineas.append(f"• Kc aplicado: {resultados[0]['kc']}")
         lineas.append("")
 
     for data in resultados:
@@ -75,8 +81,9 @@ def formatear_resultado_riego_general(resultados):
             f"• Precipitación: {data['mm_h']} mm/h\n"
             f"• ETc del período: {data['etc_periodo']} mm\n"
             f"• Riego del período: <b>{hp} h {mp:02d} min</b>\n"
-            f"• Promedio diario: {hd} h {md:02d} min\n"
+            f"• Promedio diario: {hd} h {md:02d} min"
         )
+        lineas.append("")
 
     lineas.append(f"🕐 {ahora()}")
     return "\n".join(lineas)

@@ -24,9 +24,14 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for nombre, valor in sorted(monitor.ultimos.items()):
         estado, emoji = estado_caudal(valor)
-        lineas.append(f"• <b>{nombre}</b>: {valor} L/s - {emoji} {estado}")
+        lineas.extend([
+            f"<b>{nombre}</b>",
+            f"• Caudal: {valor} L/s",
+            f"• Estado: {emoji} {estado}",
+            "",
+        ])
 
-    lineas.extend(["", f"🕐 {ahora()}"])
+    lineas.extend([f"🕐 {ahora()}"])
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
 
@@ -43,10 +48,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mensaje = (
         "<b>🤖 Estado del bot</b>\n\n"
-        f"• Navegador activo: {'Sí' if monitor.browser else 'No'}\n"
-        f"• Uptime del navegador: {uptime}\n"
+        "<b>Navegador</b>\n"
+        f"• Activo: {'Sí' if monitor.browser else 'No'}\n"
+        f"• Uptime: {uptime}\n\n"
+        "<b>Monitoreo</b>\n"
         f"• Pozos cargados: {len(monitor.ultimos)}\n"
-        f"• Fallos consecutivos: {monitor.fallos_consecutivos}\n"
+        f"• Fallos consecutivos: {monitor.fallos_consecutivos}\n\n"
         f"🕐 {ahora()}"
     )
 
@@ -74,7 +81,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje_ok = (
             f"✅ <b>Navegador reiniciado correctamente</b>\n\n"
             f"• Solicitado por: {usuario}\n"
-            f"• Fecha: {ahora_txt}"
+            f"• Fecha: {ahora_txt}\n\n"
+            "El monitoreo continuará automáticamente."
         )
 
         await context.application.bot.send_message(
@@ -87,7 +95,7 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje_error = (
             f"❌ <b>Error al reiniciar</b>\n\n"
             f"{str(e)}\n"
-            f"🕐 {ahora_txt}"
+            f"\n🕐 {ahora_txt}"
         )
 
         await context.application.bot.send_message(

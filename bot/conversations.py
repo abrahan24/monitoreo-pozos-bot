@@ -51,7 +51,7 @@ async def cmd_riego_sector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje_kc = (
         f"✅ Sector seleccionado: {sector}\n\n"
         f"{formatear_lista_kc_uva()}\n\n"
-        "Ahora ingresa el valor de Kc.\n"
+        "Ahora ingresa el valor de Kc.\n\n"
         "Ejemplo: 0.90"
     )
 
@@ -69,13 +69,13 @@ async def cmd_riego_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kc = float(texto_kc)
     except ValueError:
         await update.message.reply_text(
-            "⚠ Kc no válido. Ingresa un número.\nEjemplo: 0.9"
+            "⚠ Kc no válido.\n\nIngresa un número.\nEjemplo: 0.9"
         )
         return RIEGO_KC
 
     if kc <= 0 or kc > 2:
         await update.message.reply_text(
-            "⚠ El Kc parece fuera de rango.\nIngresa un valor razonable, por ejemplo 0.9"
+            "⚠ El Kc parece fuera de rango.\n\nIngresa un valor razonable, por ejemplo 0.9"
         )
         return RIEGO_KC
 
@@ -95,7 +95,7 @@ async def cmd_riego_kc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mensaje, parse_mode="HTML")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Error al calcular riego:\n{str(e)}")
+        await update.message.reply_text(f"❌ Error al calcular riego:\n\n{str(e)}")
 
     context.user_data.pop("sector_riego", None)
     return ConversationHandler.END
@@ -117,7 +117,7 @@ async def cmd_riego_general_inicio(update: Update, context: ContextTypes.DEFAULT
     mensaje = (
         "💧 Cálculo de riego general semanal\n\n"
         f"{formatear_lista_kc_uva()}\n\n"
-        "Ingresa el valor de Kc para calcular todos los sectores.\n"
+        "Ingresa el valor de Kc para calcular todos los sectores.\n\n"
         "Ejemplo: 0.90\n\n"
         "Para salir usa /cancelar."
     )
@@ -136,13 +136,13 @@ async def cmd_riego_general_kc(update: Update, context: ContextTypes.DEFAULT_TYP
         kc = float(texto_kc)
     except ValueError:
         await update.message.reply_text(
-            "⚠ Kc no válido. Ingresa un número.\nEjemplo: 0.9"
+            "⚠ Kc no válido.\n\nIngresa un número.\nEjemplo: 0.9"
         )
         return RIEGO_GENERAL_KC
 
     if kc <= 0 or kc > 2:
         await update.message.reply_text(
-            "⚠ El Kc parece fuera de rango.\nIngresa un valor razonable, por ejemplo 0.9"
+            "⚠ El Kc parece fuera de rango.\n\nIngresa un valor razonable, por ejemplo 0.9"
         )
         return RIEGO_GENERAL_KC
 
@@ -164,6 +164,6 @@ async def cmd_riego_general_kc(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(mensaje, parse_mode="HTML")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Error al calcular riego general:\n{str(e)}")
+        await update.message.reply_text(f"❌ Error al calcular riego general:\n\n{str(e)}")
 
     return ConversationHandler.END
