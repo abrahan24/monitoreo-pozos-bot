@@ -9,6 +9,8 @@ from config import ADMIN_ID
 from core.monitor import Monitor
 from core.utils import ahora, ahora_dt, estado_caudal
 
+DIVISOR = "━━━━━━━━━━━━━━━━━━━━"
+
 
 async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -20,14 +22,15 @@ async def cmd_caudales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Aún no hay datos cargados.")
         return
 
-    lineas = ["<b>📊 Estado actual</b>", ""]
+    lineas = ["<b>📊 Estado actual</b>", "", DIVISOR, ""]
 
     for nombre, valor in sorted(monitor.ultimos.items()):
         estado, emoji = estado_caudal(valor)
         lineas.extend([
             f"<b>{nombre}</b>",
-            f"• Caudal: {valor} L/s",
-            f"• Estado: {emoji} {estado}",
+            f"• Caudal: <b>{valor} L/s</b>",
+            f"• Estado: {emoji} <b>{estado}</b>",
+            DIVISOR,
             "",
         ])
 
@@ -48,12 +51,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mensaje = (
         "<b>🤖 Estado del bot</b>\n\n"
+        f"{DIVISOR}\n"
         "<b>Navegador</b>\n"
         f"• Activo: {'Sí' if monitor.browser else 'No'}\n"
         f"• Uptime: {uptime}\n\n"
         "<b>Monitoreo</b>\n"
         f"• Pozos cargados: {len(monitor.ultimos)}\n"
-        f"• Fallos consecutivos: {monitor.fallos_consecutivos}\n\n"
+        f"• Fallos consecutivos: {monitor.fallos_consecutivos}\n"
+        f"{DIVISOR}\n\n"
         f"🕐 {ahora()}"
     )
 
@@ -82,6 +87,7 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ <b>Navegador reiniciado correctamente</b>\n\n"
             f"• Solicitado por: {usuario}\n"
             f"• Fecha: {ahora_txt}\n\n"
+            f"{DIVISOR}\n"
             "El monitoreo continuará automáticamente."
         )
 
@@ -95,7 +101,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje_error = (
             f"❌ <b>Error al reiniciar</b>\n\n"
             f"{str(e)}\n"
-            f"\n🕐 {ahora_txt}"
+            f"\n{DIVISOR}\n"
+            f"🕐 {ahora_txt}"
         )
 
         await context.application.bot.send_message(
