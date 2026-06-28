@@ -16,8 +16,6 @@ from config import (
 )
 from core.utils import ahora, ahora_dt, estado_caudal, extraer_ult_dato_min
 
-DIVISOR = "━━━━━━━━━━━━━━━━━━━━"
-
 
 class Monitor:
     def __init__(self):
@@ -112,7 +110,8 @@ class Monitor:
 
         for el in elementos:
             texto = await el.inner_text()
-            nombre = texto.split("\n")[0].strip()
+            texto = re.sub(r"\s+", " ", texto).strip()
+            nombre = self._extraer_nombre_pozo(texto)
 
             match_caudal = re.search(r"Caudal:\s*([0-9\.]+)", texto)
             ult_dato_min = extraer_ult_dato_min(texto)
@@ -124,6 +123,21 @@ class Monitor:
             }
 
         return datos
+
+    @staticmethod
+    def _extraer_nombre_pozo(texto: str) -> str:
+        fin_nombre = re.search(
+            r"\s(?:Caudal:|Altura Agua:|Vol total:|Ult\.\s*dato hace:|Ver aplicación)\b",
+            texto,
+            re.IGNORECASE,
+        )
+        if fin_nombre:
+            nombre = texto[:fin_nombre.start()].strip()
+        else:
+            nombre = texto.strip()
+
+        nombre = re.sub(r"^Pozo:\s*", "", nombre, flags=re.IGNORECASE)
+        return nombre
 
     async def enviar(self, app: Application, mensaje: str):
         for chat in CHATS:
@@ -146,14 +160,9 @@ class Monitor:
             if not ultima_alerta or (ahora_ts - ultima_alerta).total_seconds() >= 120:
                 mensaje = (
                     f"<b>{emoji} {estado}</b>\n\n"
-                    f"{DIVISOR}\n"
-                    f"<b>Pozo</b>\n"
-                    f"{nombre}\n\n"
-                    f"<b>Caudal</b>\n"
-                    f"{caudal} L/s\n\n"
-                    f"<b>Fecha</b>\n"
-                    f"{ahora()}\n"
-                    f"{DIVISOR}"
+                    f"Pozo: <b>{nombre}</b>\n"
+                    f"Caudal: <b>{caudal} L/s</b>\n"
+                    f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
                 self.alertas[nombre] = ahora_ts
@@ -163,16 +172,10 @@ class Monitor:
             if estado != estado_ant:
                 mensaje = (
                     f"<b>{emoji} Cambio de estado</b>\n\n"
-                    f"{DIVISOR}\n"
-                    f"<b>Pozo</b>\n"
-                    f"{nombre}\n\n"
-                    f"<b>Nuevo estado</b>\n"
-                    f"{estado}\n\n"
-                    f"<b>Caudal</b>\n"
-                    f"{caudal} L/s\n\n"
-                    f"<b>Fecha</b>\n"
-                    f"{ahora()}\n"
-                    f"{DIVISOR}"
+                    f"Pozo: <b>{nombre}</b>\n"
+                    f"Nuevo estado: <b>{estado}</b>\n"
+                    f"Caudal: <b>{caudal} L/s</b>\n"
+                    f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
 
@@ -197,16 +200,10 @@ class Monitor:
             ):
                 mensaje = (
                     f"<b>📡 Falla de telemetría</b>\n\n"
-                    f"{DIVISOR}\n"
-                    f"<b>Pozo</b>\n"
-                    f"{nombre}\n\n"
-                    f"<b>Último dato hace</b>\n"
-                    f"{ult_dato_min} min\n\n"
-                    f"<b>Estado</b>\n"
-                    f"Sin actualización reciente\n\n"
-                    f"<b>Fecha</b>\n"
-                    f"{ahora()}\n"
-                    f"{DIVISOR}"
+                    f"Pozo: <b>{nombre}</b>\n"
+                    f"Último dato hace: <b>{ult_dato_min} min</b>\n"
+                    f"Estado: Sin actualización reciente\n"
+                    f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
                 self.alertas_telemetria[nombre] = ahora_ts
@@ -217,14 +214,9 @@ class Monitor:
             if estado_anterior:
                 mensaje = (
                     f"<b>✅ Telemetría recuperada</b>\n\n"
-                    f"{DIVISOR}\n"
-                    f"<b>Pozo</b>\n"
-                    f"{nombre}\n\n"
-                    f"<b>Último dato hace</b>\n"
-                    f"{ult_dato_min} min\n\n"
-                    f"<b>Fecha</b>\n"
-                    f"{ahora()}\n"
-                    f"{DIVISOR}"
+                    f"Pozo: <b>{nombre}</b>\n"
+                    f"Último dato hace: <b>{ult_dato_min} min</b>\n"
+                    f"Fecha: {ahora()}"
                 )
                 await self.enviar(app, mensaje)
 
@@ -243,20 +235,16 @@ class Monitor:
 
         detalle = "\n\n".join(
             f"{estado_caudal(caudal)[1]} <b>{nombre}</b>\n"
-            f"{DIVISOR}\n"
-            f"Estado:\n{estado_caudal(caudal)[0].capitalize()}\n\n"
-            f"Caudal:\n<code>{caudal:.1f} L/s</code>\n"
-            f"{DIVISOR}"
+            f"Estado: {estado_caudal(caudal)[0].capitalize()}\n"
+            f"Caudal: <code>{caudal:.1f} L/s</code>"
             for nombre, caudal in pozos_ordenados
         )
 
         mensaje = (
             f"<b>📡 Estado operativo de pozos Buitrón (Copayapu)</b>\n"
             f"<i>Resumen automático</i>\n\n"
-            f"{DIVISOR}\n"
             f"<b>Estado por pozo</b>\n\n"
             f"{detalle}\n\n"
-            f"{DIVISOR}\n"
             f"🕒 <b>Hora de monitoreo:</b> {ahora()}"
         )
 
